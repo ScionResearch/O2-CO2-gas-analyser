@@ -1,0 +1,95 @@
+//
+// !!! WARNING !!! AUTO-GENERATED FILE!
+// PLEASE DO NOT MODIFY IT AND USE "platformio.ini":
+// https://docs.platformio.org/page/projectconf/section_env_build.html#build-flags
+//
+{
+    "configurations": [
+        {
+            "name": "PlatformIO",
+            "includePath": [
+                "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/include",
+                "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/src",
+                "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/lib/Sensirion_I2C_SHT4x/src",
+                "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/lib/Sensirion_Core/src",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Wire",
+                "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/lib/Adafruit_NeoPixel",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/SPI",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Adafruit_ZeroDMA",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Adafruit_TinyUSB_Arduino/src",
+                "C:/Users/peake/.platformio/packages/framework-cmsis/CMSIS/Core/Include",
+                "C:/Users/peake/.platformio/packages/framework-cmsis-atmel/CMSIS/Device/ATMEL",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/cores/arduino",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Adafruit_TinyUSB_Arduino/src/arduino",
+                "C:/Users/peake/.platformio/packages/framework-cmsis/CMSIS/DSP/Include",
+                "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/board_def/variants/gas_analyser_m0",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/CI_Tests",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/HID",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/I2S/src",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/SAMD_AnalogCorrection/src",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/SDU/src",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Servo/src",
+                "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/USBHost/src",
+                ""
+            ],
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true,
+                "path": [
+                    "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/include",
+                    "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/src",
+                    "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/lib/Sensirion_I2C_SHT4x/src",
+                    "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/lib/Sensirion_Core/src",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Wire",
+                    "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/lib/Adafruit_NeoPixel",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/SPI",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Adafruit_ZeroDMA",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Adafruit_TinyUSB_Arduino/src",
+                    "C:/Users/peake/.platformio/packages/framework-cmsis/CMSIS/Core/Include",
+                    "C:/Users/peake/.platformio/packages/framework-cmsis-atmel/CMSIS/Device/ATMEL",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/cores/arduino",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Adafruit_TinyUSB_Arduino/src/arduino",
+                    "C:/Users/peake/.platformio/packages/framework-cmsis/CMSIS/DSP/Include",
+                    "G:/My Drive/Documents/Platformio/Projects/O2-CO2-gas-analyser/board_def/variants/gas_analyser_m0",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/CI_Tests",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/HID",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/I2S/src",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/SAMD_AnalogCorrection/src",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/SDU/src",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/Servo/src",
+                    "C:/Users/peake/.platformio/packages/framework-arduino-samd-adafruit/libraries/USBHost/src",
+                    ""
+                ]
+            },
+            "defines": [
+                "PLATFORMIO=60118",
+                "ARDUINO_GA_M0",
+                "__SAMD21E18A__",
+                "__SAMD21__",
+                "__FPU_PRESENT",
+                "ARM_MATH_CM0",
+                "ENABLE_CACHE",
+                "USE_TINYUSB=0",
+                "ARDUINO=10805",
+                "F_CPU=48000000L",
+                "USBCON",
+                "USB_VID=0x04D8",
+                "USB_PID=0xEB6A",
+                "USB_PRODUCT=\"BSI Gas Analyser M0\"",
+                "USB_MANUFACTURER=\"BSI\"",
+                "ARDUINO_ARCH_SAMD",
+                "USB_CONFIG_POWER=100",
+                "ARDUINO_SAMD_ADAFRUIT",
+                ""
+            ],
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++11",
+            "compilerPath": "C:/Users/peake/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-gcc.exe",
+            "compilerArgs": [
+                "-mcpu=cortex-m0",
+                "-mthumb",
+                ""
+            ]
+        }
+    ],
+    "version": 4
+}
