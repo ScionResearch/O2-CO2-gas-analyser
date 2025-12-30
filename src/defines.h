@@ -5,6 +5,9 @@
 #include <Adafruit_NeoPixel.h>
 #include <SensirionI2cSht4x.h>
 #include <Wire.h>
+#include "SGX_4OX.h"
+#include "SGX_INIR2_CD100.h"
+#include "NTC_Therm.h"
 
 // Pins
 #define PIN_VPSU_FB 2
@@ -40,3 +43,18 @@
 // Lib Objects
 Adafruit_NeoPixel led(1, PIN_LED_DAT, NEO_GRB + NEO_KHZ800);
 SensirionI2cSht4x sht;
+SGX40X O2(PIN_V_O2_SENS, 12, 2.048, 100.0, 100.0);
+CD100 CO2(Serial2);
+NTC_Therm ntcHeat(PIN_NTC_HEAT, 10000.0, 10000.0, 4100.0, true, 12, 2.048);
+NTC_Therm ntcAmb(PIN_NTC_AMB, 10000.0, 10000.0, 4100.0, true, 12, 2.048);
+
+// LED colours
+#define LED_RED 0xFF0000
+#define LED_GREEN 0x00FF00
+#define LED_BLUE 0x0000FF
+#define LED_YELLOW 0xAAFF00
+#define LED_AMBER 0xFFFF00
+#define LED_CYAN 0x00FFFF
+#define LED_MAGENTA 0xFF00FF
+#define LED_WHITE 0xFFFFFF
+#define LED_OFF 0x000000

@@ -165,6 +165,7 @@ extern SERCOM sercom4;
 extern SERCOM sercom5;
 
 extern Uart Serial1;
+extern Uart Serial2;
 
 #endif
 
