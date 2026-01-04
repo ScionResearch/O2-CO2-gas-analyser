@@ -16,9 +16,9 @@ float absoluteHumidity(float temperatureC, float vapourPressure);
 void setup() {
   asm(".global _printf_float");
   Serial.begin(115200);
-  while (!Serial) {
+  /*while (!Serial) {
     delay(100);
-  }
+  }*/
 
   Serial.println("O2-CO2 Gas Analyser Starting...");
 
@@ -78,6 +78,10 @@ void setup() {
   O2.setZeroCalibration(config.o2CalibrationOffset);
   O2.setSpanCalibration(config.o2CalibrationScale);
 
+  Serial.printf("O2 sensor zero calibration: %.2f\n\r", O2.getZeroCalibration());
+  Serial.printf("O2 sensor span calibration: %.2f\n\r", O2.getSpanCalibration());
+  Serial.printf("O2: %.2f\n\r", O2.readO2());
+
   // CO2 sensor init
   CO2.begin();
   CO2.setCalibrationOffset(config.co2CalibrationOffset);
@@ -119,8 +123,8 @@ void setup() {
   heaterCtrl.setSampleTime(500);
   heaterCtrl.setStaleDataDetection(0.1, 10000);
   heaterCtrl.setSafeValueLimits(0.0, 60.0);
-  heaterCtrl.setIterm(60.0); // Set inital Iterm to stop long wind up times when T is already close to setpoint
   heaterCtrl.enable();
+  heaterCtrl.setIterm(50.0); // Set inital Iterm to stop long wind up times when T is already close to setpoint
 
   led.setPixelColor(0, LED_AMBER);  // Heating to setpoint
   led.show();
@@ -136,7 +140,7 @@ void setup() {
   while (!temperatureStable) {
     float temperatureHeatC = ntcHeat.temperature();
     heaterCtrl.update(temperatureHeatC);
-    Serial.printf("  Temp: %.2f °C\n\r", temperatureHeatC);
+    Serial.printf("  Temp: %.2f °C P term: %.2f I term: %.2f\n\r", temperatureHeatC, heaterCtrl.getProportional(), heaterCtrl.getIntegral());
     if (abs(heaterCtrl.getError()) <= maxDeviationC) {
       stableCount++;
       if (stableCount >= 40) {  // ~ 20 seconds at 500ms interval sample time
@@ -145,7 +149,7 @@ void setup() {
       }
     } else stableCount = 0; // Reset if error is too high
 
-    if (millis() - timeStamp >= 300000) {
+    if (millis() - timeStamp >= 900000) {
       heaterError = true;
       break;
     }
@@ -178,6 +182,30 @@ void loop() {
     led.show();
   }
 
+  static bool O2calibrating = false;
+  if (O2.isCalibrating()) {
+    if (!O2calibrating) {
+      O2calibrating = true;
+      led.setPixelColor(0, LED_BLUE);
+      led.show();
+    }    
+    O2.manageCalibration();
+  } else if (O2calibrating) {
+    uint8_t error = O2.calibrationError();
+    if (error == 0) {
+      Serial.printf("O2 calibration complete, span coefficient: %.2f offset: %.2f\n\r", O2.getSpanCalibration(), O2.getZeroCalibration());
+      led.setPixelColor(0, LED_GREEN);
+      led.show();
+    } else {
+      const char *errorMessage[4] = {"did not stabilise", "current below min", "current above max", "unknown error"};
+      if (error > 3) error = 3;
+      Serial.printf("O2 calibration error: %s\n\r", errorMessage[error]);
+      led.setPixelColor(0, LED_RED);
+      led.show();
+    }
+    O2calibrating = false;
+  }
+
   if (millis() - timeStamp >= 1000) {
     timeStamp = millis();
     
@@ -188,13 +216,6 @@ void loop() {
     modbusInputRegisters.CO2ppm = CO2.CO2();
     modbusInputRegisters.CO2percent = modbusInputRegisters.CO2ppm / 10000.0;
 
-    /*Serial.printf("T Ambient: %.2f °C | T Heater: %.2f °C | T Gas: %.2f °C | RH Gas: %.2f %% | O2: %.2f %% | CO2: %u ppm\r\n",
-                  temperatureAmbC,
-                  temperatureHeatC,
-                  shtTemperatureC,
-                  shtHumidity,
-                  o2Percent,
-                  co2Ppm);*/
     led.setPixelColor(0, LED_GREEN);
     led.show();
   }
@@ -366,17 +387,17 @@ bool holdingToConfig() {
   // Sensor calibration
   if (temp.O2SetZeroPoint == 1) {
     // Start zero point calibration
-    // TODO
+    O2.startZeroCalibration(modbusInputRegisters.gasTempC);
     Serial.println("Start O2 zero point calibration");
   }
   if (temp.O2SetXPoint >= 10.0 && temp.O2SetXPoint <= 25.0) {
     // Start high point calibration
-    // TODO
+    O2.startSpanCalibration(temp.O2SetXPoint, modbusInputRegisters.gasTempC);
     Serial.println("Start O2 high point calibration");
   }
-  if (temp.CO2SetZeroPoint == 1) {
+  if (temp.CO2SetZeroPoint > 0 && temp.CO2SetZeroPoint < 5000) {
     // Start zero point calibration
-    // TODO
+    CO2.setCalibrationOffset(temp.CO2SetZeroPoint - CO2.CO2());
     Serial.println("Start CO2 zero point calibration");
   }
   if (temp.CO2SetXPoint >= 300.0 && temp.CO2SetXPoint <= 50000.0) {

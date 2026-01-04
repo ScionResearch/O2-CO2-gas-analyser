@@ -80,10 +80,10 @@ struct Config {
     float heaterKi = 0.5;
     float heaterKd = 0.0;
     float heaterMaxI = 90.0;
-    float heaterSetpointC = 40.0;
+    float heaterSetpointC = 35.0;
     float heaterMinAmbientDeltaC = 5.0;
-    float o2CalibrationOffset = 0.0;
-    float o2CalibrationScale = 1.0;
+    float o2CalibrationOffset = 0.06;
+    float o2CalibrationScale = 0.2;
     int32_t co2CalibrationOffset = 0;
     float co2CalibrationScale = 1.0;
     float ntcAmbOffsetC = 0.0;

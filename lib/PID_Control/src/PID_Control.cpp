@@ -309,8 +309,8 @@ void PID_Control::setSampleTime(unsigned long sample_time) {
 }
 
 void PID_Control::setIterm(float Iterm) {
-    if (Iterm > _integral_max || Iterm < _integral_min) {
-        _I_term = Iterm;
+    if (Iterm <= _integral_max || Iterm >= _integral_min) {
+        _integral = Iterm;
     }
 }
 
