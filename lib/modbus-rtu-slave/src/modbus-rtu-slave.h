@@ -63,7 +63,7 @@ class ModbusRTUSlave {
     void _exceptionResponse(uint8_t code);
 
     void _calculateTimeouts(uint32_t baud, uint8_t config);
-    uint16_t _crc(uint8_t len);
+    uint16_t _crc(uint16_t len);
     uint16_t _div8RndUp(uint16_t value);
     uint16_t _bytesToWord(uint8_t high, uint8_t low);
 };

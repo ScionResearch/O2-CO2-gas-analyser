@@ -263,7 +263,7 @@ void ModbusRTUSlave::_processWriteMultipleHoldingRegisters() {
 
 bool ModbusRTUSlave::_readRequest() {
   uint16_t numBytes = 0;
-  uint32_t startTime = 0;
+  uint32_t startTime = micros();  // Initialize to current time to avoid race condition
   do {
     if (_serial->available()) {
       startTime = micros();
@@ -272,6 +272,8 @@ bool ModbusRTUSlave::_readRequest() {
     }
   } while (micros() - startTime <= _charTimeout && numBytes < MODBUS_RTU_SLAVE_BUF_SIZE);
   while (micros() - startTime < _frameTimeout);
+  // Minimum valid Modbus frame is 4 bytes (1 addr + 1 FC + 2 CRC), guard against underflow
+  if (numBytes < 4) return false;
   if (!_serial->available() && (_buf[0] == _id || _buf[0] == 0) && _crc(numBytes - 2) == _bytesToWord(_buf[numBytes - 1], _buf[numBytes - 2])) return true;
   else return false;
 }
@@ -283,7 +285,57 @@ void ModbusRTUSlave::_writeResponse(uint8_t len) {
     _buf[len + 1] = highByte(crc);
     if (_dePin != NO_DE_PIN) digitalWrite(_dePin, HIGH);
     _serial->write(_buf, len + 2);
-    _serial->flush();
+    // NOTE: Custom safeFlush function to detect sercom lockup! Will not work with non-SAMD boards, use _sercom->flush() instead.
+    _hardwareSerial->safeFlush(100);
+    // _sercom->flush(); // Original line for non-SAMD boards
+    // To use safe flush make the following changes to files in cores/arduino:
+    // In HardwareSerial.h, add: virtual void safeFlush(uint32_t timout_ms) = 0; to public HardwareSerial class
+    // In Uart.h, add: void safeFlush(uint32_t timout_ms); to public Uart class
+    // In Uart.cpp, add the following function:
+    /*
+    void Uart::safeFlush(uint32_t timeout_ms)
+      {
+        uint32_t start = millis();
+        while(txBuffer.available()) { // wait until TX buffer is empty
+          if (millis() - start > timeout_ms) return;
+        }
+          sercom->safeFlushUART(timeout_ms);
+      }
+    */
+    // In SERCOM.h, add: void safeFlushUART(uint32_t timeout_ms); to public SERCOM class
+    // In SERCOM.cpp, add the following function:
+    /*
+    void SERCOM::safeFlushUART(uint32_t timeout_ms)
+    {
+      // Skip checking transmission completion if data register is empty
+      if(isDataRegisterEmptyUART()) return;
+
+      uint32_t start = millis();
+
+      // Clear stale TXC
+      sercom->USART.INTFLAG.bit.TXC = 1;
+
+      while (true)
+      {
+        if (sercom->USART.INTFLAG.bit.TXC)
+        {
+          return;
+        }
+
+        if ((millis() - start) > timeout_ms)
+        {
+          // Reset SERCOM
+          sercom->USART.CTRLA.bit.ENABLE = 0;
+          while (sercom->USART.SYNCBUSY.bit.ENABLE);
+
+          sercom->USART.CTRLA.bit.ENABLE = 1;
+          while (sercom->USART.SYNCBUSY.bit.ENABLE);
+
+          return;
+        }
+      }
+    }
+    */
     if (_dePin != NO_DE_PIN) digitalWrite(_dePin, LOW);
     while(_serial->available()) {
       _serial->read();
@@ -314,11 +366,11 @@ void ModbusRTUSlave::_calculateTimeouts(uint32_t baud, uint8_t config) {
   }
 }
 
-uint16_t ModbusRTUSlave::_crc(uint8_t len) {
+uint16_t ModbusRTUSlave::_crc(uint16_t len) {
   uint16_t value = 0xFFFF;
-  for (uint8_t i = 0; i < len; i++) {
+  for (uint16_t i = 0; i < len; i++) {
     value ^= (uint16_t)_buf[i];
-    for (uint8_t j = 0; j < 8; j++) {
+    for (uint16_t j = 0; j < 8; j++) {
       bool lsb = value & 1;
       value >>= 1;
       if (lsb) value ^= 0xA001;

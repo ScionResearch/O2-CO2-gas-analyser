@@ -1,9 +1,13 @@
 #include "defines.h"
 #include "FlashStorage_SAMD.h"
 
-uint32_t timeStamp = 0;
+uint32_t slowLoopTimeStamp = 0;
+uint32_t mediumLoopTimeStamp = 0;
+uint32_t fastLoopTimeStamp = 0;
 
 // Forward declarations
+void setLED(uint32_t colour);
+void updateLED();
 uint16_t serialConfigFromParts(uint8_t parity, uint8_t stopBits, uint8_t dataBits);
 void serialConfigToParts(uint16_t config, uint16_t &stopBits, uint16_t &parity, uint16_t &dataBits);
 void configToHolding();
@@ -15,10 +19,13 @@ float absoluteHumidity(float temperatureC, float vapourPressure);
 
 void setup() {
   asm(".global _printf_float");
+
   Serial.begin(115200);
-  /*while (!Serial) {
+  while (!Serial) {
     delay(100);
-  }*/
+  }
+
+  Serial.printf("Reset reason: %s\n\r", resetReason());
 
   Serial.println("O2-CO2 Gas Analyser Starting...");
 
@@ -56,8 +63,7 @@ void setup() {
   // LED init
   led.begin();
   led.clear();
-  led.setPixelColor(0, LED_BLUE);
-  led.show();
+  setLED(LED_YELLOW);
 
   // Analog init
   analogReference(AR_EXTERNAL);
@@ -99,8 +105,7 @@ void setup() {
     Serial.print("Error trying to execute serialNumber(): ");
     errorToString(error, errorMessage, sizeof errorMessage);
     Serial.println(errorMessage);
-    led.setPixelColor(0, LED_RED);
-    led.show();
+    setLED(LED_RED);
     while (1);
   }
   Serial.print("  serialNumber: ");
@@ -126,89 +131,129 @@ void setup() {
   heaterCtrl.enable();
   heaterCtrl.setIterm(50.0); // Set inital Iterm to stop long wind up times when T is already close to setpoint
 
-  led.setPixelColor(0, LED_AMBER);  // Heating to setpoint
-  led.show();
+  setLED(LED_AMBER);  // Heating to setpoint
 
   bool temperatureStable = false;
   uint32_t stableCount = 0;
   float maxDeviationC = 0.2;
   bool heaterError = false;
+
+  wdt_init ( WDT_CONFIG_PER_2K );
   
-  timeStamp = millis();
+  slowLoopTimeStamp = millis();
+  fastLoopTimeStamp = millis();
 
   Serial.printf("Waiting for heater to reach %.2f °C...\n\r", config.heaterSetpointC);
   while (!temperatureStable) {
-    float temperatureHeatC = ntcHeat.temperature();
-    heaterCtrl.update(temperatureHeatC);
-    Serial.printf("  Temp: %.2f °C P term: %.2f I term: %.2f\n\r", temperatureHeatC, heaterCtrl.getProportional(), heaterCtrl.getIntegral());
-    if (abs(heaterCtrl.getError()) <= maxDeviationC) {
-      stableCount++;
-      if (stableCount >= 40) {  // ~ 20 seconds at 500ms interval sample time
-        temperatureStable = true;
+    if (millis() - fastLoopTimeStamp >= 500) {
+      fastLoopTimeStamp = millis();
+      // Sensor reads
+      sht.measureHighPrecision(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
+      modbusInputRegisters.gasVP = vapourPressure(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
+      modbusInputRegisters.gasAH = absoluteHumidity(modbusInputRegisters.gasTempC, modbusInputRegisters.gasVP);
+      modbusInputRegisters.ambTempC = ntcAmb.temperature();
+      modbusInputRegisters.heatTempC = ntcHeat.temperature();
+      heaterCtrl.update(modbusInputRegisters.heatTempC);
+      modbusInputRegisters.O2percent = O2.readO2(modbusInputRegisters.gasTempC);
+      CO2.manage();
+
+      modbusInputRegisters.CO2ppm = CO2.CO2();
+      modbusInputRegisters.CO2percent = modbusInputRegisters.CO2ppm / 10000.0;
+
+      sensorsToInputs();
+    
+      if (abs(heaterCtrl.getError()) <= maxDeviationC) {
+        stableCount++;
+        if (stableCount >= 40) {  // ~ 20 seconds at 500ms interval sample time
+          temperatureStable = true;
+          break;
+        }
+      } else stableCount = 0; // Reset if error is too high
+
+      if (millis() - slowLoopTimeStamp >= 900000) {
+        heaterError = true;
         break;
       }
-    } else stableCount = 0; // Reset if error is too high
-
-    if (millis() - timeStamp >= 900000) {
-      heaterError = true;
-      break;
     }
-
-    delay(500);
+    modbus.poll();
+    wdt_reset();
   }
 
   if (heaterError) {
     Serial.println("Heater error - timed out while trying to reach setpoint.");
-    led.setPixelColor(0, LED_RED);
-    led.show();
+    setLED(LED_RED);
     while (1);
   }
 
-  Serial.printf("Reached setpoint %.2f °C in %.2f seconds\n\r", config.heaterSetpointC, (millis() - timeStamp) / 1000.0);
+  Serial.printf("Reached setpoint %.2f °C in %.2f seconds\n\r", config.heaterSetpointC, (millis() - slowLoopTimeStamp) / 1000.0);
 
-  led.setPixelColor(0, LED_GREEN);
-  led.show();
+  setLED(LED_GREEN);
+  delay(1000);
 
   Serial.println("Initialisation complete.");
+  slowLoopTimeStamp = millis();
+  mediumLoopTimeStamp = millis();
+  fastLoopTimeStamp = millis();
 }
 
+
 void loop() {
-  sht.measureHighPrecision(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
-  modbusInputRegisters.gasVP = vapourPressure(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
-  modbusInputRegisters.gasAH = absoluteHumidity(modbusInputRegisters.gasTempC, modbusInputRegisters.gasVP);
-
-  if (CO2.manage()) {
-    led.setPixelColor(0, LED_CYAN);
-    led.show();
-  }
-
-  static bool O2calibrating = false;
-  if (O2.isCalibrating()) {
-    if (!O2calibrating) {
-      O2calibrating = true;
-      led.setPixelColor(0, LED_BLUE);
-      led.show();
-    }    
-    O2.manageCalibration();
-  } else if (O2calibrating) {
-    uint8_t error = O2.calibrationError();
-    if (error == 0) {
-      Serial.printf("O2 calibration complete, span coefficient: %.2f offset: %.2f\n\r", O2.getSpanCalibration(), O2.getZeroCalibration());
-      led.setPixelColor(0, LED_GREEN);
-      led.show();
-    } else {
-      const char *errorMessage[4] = {"did not stabilise", "current below min", "current above max", "unknown error"};
-      if (error > 3) error = 3;
-      Serial.printf("O2 calibration error: %s\n\r", errorMessage[error]);
-      led.setPixelColor(0, LED_RED);
-      led.show();
+  // Fast loop - every cycle -------------------►►►
+  if (millis() - fastLoopTimeStamp >= 50) {
+    fastLoopTimeStamp = millis();
+    int FC = modbus.poll();
+    if (FC > 0) {
+      if (FC == 6 || FC == 16) {
+        if (holdingToConfig()) {
+          // Add EEPROM.commit() here
+        }
+      }
     }
-    O2calibrating = false;
+    wdt_reset();
   }
 
-  if (millis() - timeStamp >= 1000) {
-    timeStamp = millis();
+  // ------------------------------------------------|
+
+  // Medium loop - every 200ms -----------------------►►
+  if (millis() - mediumLoopTimeStamp >= 200) {
+    mediumLoopTimeStamp = millis();
+
+    // CO2 sensor management
+    CO2.manage();
+
+    // O2 sensor calibration management
+    static bool O2calibrating = false;
+    if (O2.isCalibrating()) {
+      if (!O2calibrating) {
+        O2calibrating = true;
+        setLED(LED_BLUE);
+      }    
+      O2.manageCalibration();
+    } else if (O2calibrating) {
+      uint8_t error = O2.calibrationError();
+      if (error == 0) {
+        Serial.printf("O2 calibration complete, span coefficient: %.2f offset: %.2f\n\r", O2.getSpanCalibration(), O2.getZeroCalibration());
+        setLED(LED_GREEN);
+      } else {
+        const char *errorMessage[4] = {"did not stabilise", "current below min", "current above max", "unknown error"};
+        if (error > 3) error = 3;
+        Serial.printf("O2 calibration error: %s\n\r", errorMessage[error]);
+        setLED(LED_RED);
+      }
+      O2calibrating = false;
+    } else updateLED();
+  }
+  // ------------------------------------------------|
+
+  // Slow loop - every 1000ms -----------------------►
+
+  if (millis() - slowLoopTimeStamp >= 1000) {
+    slowLoopTimeStamp = millis();
     
+    // Sensor reads
+    sht.measureHighPrecision(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
+    modbusInputRegisters.gasVP = vapourPressure(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
+    modbusInputRegisters.gasAH = absoluteHumidity(modbusInputRegisters.gasTempC, modbusInputRegisters.gasVP);
     modbusInputRegisters.ambTempC = ntcAmb.temperature();
     modbusInputRegisters.heatTempC = ntcHeat.temperature();
     heaterCtrl.update(modbusInputRegisters.heatTempC);
@@ -216,20 +261,63 @@ void loop() {
     modbusInputRegisters.CO2ppm = CO2.CO2();
     modbusInputRegisters.CO2percent = modbusInputRegisters.CO2ppm / 10000.0;
 
-    led.setPixelColor(0, LED_GREEN);
-    led.show();
+    sensorsToInputs();
   }
+  // ------------------------------------------------|
+}
 
-  sensorsToInputs();
-  int FC = modbus.poll();
-  if (FC > 0) {
-    Serial.printf("FC: %d\n\r", FC);
-    if (FC == 6 || FC == 16) {
-      if (holdingToConfig()) {
-        // Add EEPROM.commit() here
-      }
-    }
+void setLED(uint32_t colour) {
+  led.setPixelColor(0, colour);
+  led.show();
+}
+
+void updateLED() {
+  static uint32_t fadeStep = 0;
+  static uint32_t pulseStep = 0;
+  const uint32_t totalColorSteps = 300;  // 300 steps * 50ms = 15 seconds for full color cycle
+  const uint32_t totalPulseSteps = 120;  // 120 steps * 50ms = 6 seconds for full pulse cycle
+  const uint32_t stepsPerColorSegment = totalColorSteps / 3;  // 100 steps per color transition
+  
+  // Update color and pulse steps independently
+  fadeStep = (fadeStep + 1) % totalColorSteps;
+  pulseStep = (pulseStep + 1) % totalPulseSteps;
+  
+  // Calculate color
+  uint8_t r, g, b;
+  
+  if (fadeStep < stepsPerColorSegment) {
+    // Yellow to Green (fade out red)
+    r = 255 - (fadeStep * 255 / stepsPerColorSegment);
+    g = 255;
+    b = 0;
+  } else if (fadeStep < (stepsPerColorSegment * 2)) {
+    // Green to Cyan (fade in blue)
+    r = 0;
+    g = 255;
+    b = ((fadeStep - stepsPerColorSegment) * 255 / stepsPerColorSegment);
+  } else {
+    // Cyan to Yellow (fade out blue, fade in red)
+    r = ((fadeStep - (stepsPerColorSegment * 2)) * 255 / stepsPerColorSegment);
+    g = 255;
+    b = 255 - ((fadeStep - (stepsPerColorSegment * 2)) * 255 / stepsPerColorSegment);
   }
+  
+  // Calculate brightness pulse (sine wave approximation)
+  // Pulse from ~10% to ~80% brightness
+  float brightnessFactor;
+  if (pulseStep < totalPulseSteps/2) {
+    // Rising edge: 10% to 80%
+    brightnessFactor = 0.1f + (0.7f * pulseStep / (totalPulseSteps/2.0f));
+  } else {
+    // Falling edge: 80% to 10%
+    brightnessFactor = 0.8f - (0.7f * (pulseStep - totalPulseSteps/2.0f) / (totalPulseSteps/2.0f));
+  }
+  
+  // Apply brightness to colors
+  led.setBrightness((uint8_t)(255 * brightnessFactor));
+  
+  led.setPixelColor(0, led.Color(r, g, b));
+  led.show();
 }
 
 uint16_t serialConfigFromParts(uint8_t parity, uint8_t stopBits, uint8_t dataBits) {

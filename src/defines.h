@@ -1,8 +1,10 @@
 #pragma once
 
 #include <Arduino.h>
+#include "debug/debug.h"
 // Lib includes
-#include <Adafruit_NeoPixel.h>
+#include <wdt_samd21.h>
+#include <Adafruit_NeoPixel_ZeroDMA.h>
 #include <SensirionI2cSht4x.h>
 #include <Wire.h>
 #include "SGX_4OX.h"
@@ -47,7 +49,8 @@
 #define NTC_OVERSAMPLING_SAMPLES 10
 
 // Lib Objects
-Adafruit_NeoPixel led(1, PIN_LED_DAT, NEO_GRB + NEO_KHZ800);
+//Adafruit_NeoPixel led(1, PIN_LED_DAT, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel_ZeroDMA led(1, PIN_LED_DAT, NEO_GRB + NEO_KHZ800);
 SensirionI2cSht4x sht;
 SGX40X O2(PIN_V_O2_SENS, 12, 2.048, 100.0, 100.0);
 CD100 CO2(Serial2);
@@ -61,7 +64,7 @@ ModbusRTUSlave modbus(Serial1, PIN_RS485_DE);
 #define LED_GREEN 0x00FF00
 #define LED_BLUE 0x0000FF
 #define LED_YELLOW 0xAAFF00
-#define LED_AMBER 0xFFFF00
+#define LED_AMBER 0xFFAA00
 #define LED_CYAN 0x00FFFF
 #define LED_MAGENTA 0xFF00FF
 #define LED_WHITE 0xFFFFFF

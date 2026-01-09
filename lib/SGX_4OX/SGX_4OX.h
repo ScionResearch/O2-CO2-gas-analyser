@@ -4,7 +4,7 @@
 #define SGX40X_DEBUG    1
 
 // Temperature coefficient array
-const float SGX40X_TEMP_COEFF[9][2] = {
+const float SGX40X_TEMP_COEFF[10][2] = {
     { -30.0, 0.868 },
     { -20.0, 0.895 },
     { -10.0, 0.946 },
@@ -13,12 +13,13 @@ const float SGX40X_TEMP_COEFF[9][2] = {
     { 20.0,  1.000 },
     { 30.0,  1.025 },
     { 40.0,  1.036 },
-    { 50.0,  1.042 }
+    { 50.0,  1.042 },
+    { 100.0, 1.042 }    // Dummy value for extrapolation beyond 50°C
 };
 
 // Limits
 #define SGX40X_MIN_TEMP_C               -30.0
-#define SGX40X_MAX_TEMP_C               50.0
+#define SGX40X_MAX_TEMP_C               100.0
 #define SGX40X_MAX_CURRENT_uA           150.0
 #define SGX40X_MIN_CURRENT_AIR_uA       70.0
 #define SGX40X_MAX_CURRENT_AIR_uA       130.0
