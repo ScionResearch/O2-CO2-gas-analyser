@@ -222,6 +222,11 @@ void loop() {
       uint8_t error = O2.calibrationError();
       if (error == 0) {
         Serial.printf("O2 calibration complete, span coefficient: %.2f offset: %.2f\n\r", O2.getSpanCalibration(), O2.getZeroCalibration());
+        config.o2CalibrationOffset = O2.getZeroCalibration();
+        config.o2CalibrationScale = O2.getSpanCalibration();
+        EEPROM.put(1, config);
+        EEPROM.commit();
+        Serial.println("Saved new values to non-volatile memory");
         systemState.state = STATE_NORMAL;
       } else {
         const char *errorMessage[4] = {"did not stabilise", "current below min", "current above max", "unknown error"};
@@ -490,9 +495,6 @@ void setErrorState(uint8_t statusItem_bp, uint8_t errorCode_bm) {
   modbusHoldingRegisters.status &= ~(0x0F << statusItem_bp); // Clear existing bits
   modbusHoldingRegisters.status |= statusBits;
   memcpy(holding, &modbusHoldingRegisters.status, sizeof(uint32_t));
-
-  // Debug output
-  Serial.printf("Set status bits at bp %u to 0x%02X, new status: 0x%08X\n\r", statusItem_bp, errorCode_bm, modbusHoldingRegisters.status);
 }
 
 uint8_t getErrorState(uint8_t statusItem_bp) {
@@ -518,7 +520,7 @@ bool updateSHTmeasurements() {
   if (sensorError) {
     systemState.state = STATE_ERROR;
     return false;
-  } else if (prevSensorError) {
+  } else if (prevSensorError && systemState.state != STATE_CALIBRATING_O2) {
     systemState.state = STATE_NORMAL;
   }
   return true;
@@ -539,7 +541,7 @@ bool updateAmbientTemp() {
   if (sensorError) {
     systemState.state = STATE_ERROR;
     return false;
-  } else if (prevSensorError) {
+  } else if (prevSensorError && systemState.state != STATE_CALIBRATING_O2) {
     systemState.state = STATE_NORMAL;
   }
   return true;
@@ -573,7 +575,7 @@ bool updateHeaterTemp() {
   if (sensorError) {
     systemState.state = STATE_ERROR;
     return false;
-  } else if (prevSensorError || wasUnstable) {
+  } else if ((prevSensorError || wasUnstable) && stableCount >= 5 && systemState.state != STATE_CALIBRATING_O2) {
     systemState.state = STATE_NORMAL;
   }
   return true;
@@ -600,7 +602,7 @@ bool updateO2() {
   if (sensorError) {
     systemState.state = STATE_ERROR;
     return false;
-  } else if (prevSensorError) {
+  } else if (prevSensorError && systemState.state != STATE_CALIBRATING_O2) {
     systemState.state = STATE_NORMAL;
   }
   return true;
@@ -623,7 +625,7 @@ bool updateCO2(uint32_t lastReading_ts) {
   if (sensorError) {
     systemState.state = STATE_ERROR;
     return false;
-  } else if (prevSensorError) {
+  } else if (prevSensorError && systemState.state != STATE_CALIBRATING_O2) {
     systemState.state = STATE_NORMAL;
   }
   modbusInputRegisters.CO2ppm = CO2.CO2();
