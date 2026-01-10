@@ -8,6 +8,7 @@
 // Enter bt into the debug console to see the backtrace
 
 void enableFaultExceptions();
+bool wdtResetOccurred();
 char *resetReason();
 
 extern "C" void HardFault_Handler(void);

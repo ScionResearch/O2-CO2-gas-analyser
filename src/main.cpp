@@ -15,19 +15,34 @@ bool holdingToConfig();
 void sensorsToInputs();
 float vapourPressure(float temperatureC, float relativeHumidity);
 float absoluteHumidity(float temperatureC, float vapourPressure);
+void setErrorState(uint8_t statusItem_bp, uint8_t errorCode_bm);
+uint8_t getErrorState(uint8_t statusItem_bp);
+bool updateSHTmeasurements();
+bool updateAmbientTemp();
+bool updateHeaterTemp();
+bool updateO2();
+bool updateCO2(uint32_t lastReading_ts);
 
 
 void setup() {
   asm(".global _printf_float");
 
   Serial.begin(115200);
+
+  systemState.state = STATE_STARTUP;
+  // LED init
+  led.begin();
+  led.clear();
+  updateLED();
+
+  uint32_t startTime = millis();
   while (!Serial) {
     delay(100);
+    updateLED();
+    if (millis() - startTime >= 5000) {
+      break;
+    }
   }
-
-  Serial.printf("Reset reason: %s\n\r", resetReason());
-
-  Serial.println("O2-CO2 Gas Analyser Starting...");
 
   // EEPROM init
   uint8_t eepromVersion = EEPROM.read(0);
@@ -59,11 +74,22 @@ void setup() {
     Serial.printf("  ntcHeatOffsetC: %.2f\n\r", config.ntcHeatOffsetC);
     Serial.printf("  ntcHeatScale: %.2f\n\r", config.ntcHeatScale);
   }
-  
-  // LED init
-  led.begin();
-  led.clear();
-  setLED(LED_YELLOW);
+
+  uint8_t wdtCount = 0;
+  if (wdtResetOccurred()) {
+    config.wdtTimerResetCounter++;
+    if ((config.wdtTimerResetCounter >255)) {
+      wdtCount = 255;
+    } else wdtCount = (uint8_t)config.wdtTimerResetCounter;
+    setErrorState(STATUS_SYSTEM_bp, STATUS_SYSTEM_WDT_RESET_bm);
+    EEPROM.put(1, config);
+    EEPROM.commit();
+  }
+  setErrorState(STATUS_WDT_RESETS_bp, wdtCount);
+  Serial.printf("Reset reason: %s\n\r", resetReason());
+ 
+
+  Serial.println("O2-CO2 Gas Analyser Starting...");
 
   // Analog init
   analogReference(AR_EXTERNAL);
@@ -131,66 +157,17 @@ void setup() {
   heaterCtrl.enable();
   heaterCtrl.setIterm(50.0); // Set inital Iterm to stop long wind up times when T is already close to setpoint
 
-  setLED(LED_AMBER);  // Heating to setpoint
+  systemState.state = STATE_TEMP_UNSTABLE;
+  setErrorState(STATUS_HEATER_bp, STATUS_HEATER_TEMP_UNSTABLE_bm);
 
-  bool temperatureStable = false;
-  uint32_t stableCount = 0;
-  float maxDeviationC = 0.2;
-  bool heaterError = false;
+  updateLED();
 
   wdt_init ( WDT_CONFIG_PER_2K );
-  
-  slowLoopTimeStamp = millis();
-  fastLoopTimeStamp = millis();
-
-  Serial.printf("Waiting for heater to reach %.2f °C...\n\r", config.heaterSetpointC);
-  while (!temperatureStable) {
-    if (millis() - fastLoopTimeStamp >= 500) {
-      fastLoopTimeStamp = millis();
-      // Sensor reads
-      sht.measureHighPrecision(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
-      modbusInputRegisters.gasVP = vapourPressure(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
-      modbusInputRegisters.gasAH = absoluteHumidity(modbusInputRegisters.gasTempC, modbusInputRegisters.gasVP);
-      modbusInputRegisters.ambTempC = ntcAmb.temperature();
-      modbusInputRegisters.heatTempC = ntcHeat.temperature();
-      heaterCtrl.update(modbusInputRegisters.heatTempC);
-      modbusInputRegisters.O2percent = O2.readO2(modbusInputRegisters.gasTempC);
-      CO2.manage();
-
-      modbusInputRegisters.CO2ppm = CO2.CO2();
-      modbusInputRegisters.CO2percent = modbusInputRegisters.CO2ppm / 10000.0;
-
-      sensorsToInputs();
-    
-      if (abs(heaterCtrl.getError()) <= maxDeviationC) {
-        stableCount++;
-        if (stableCount >= 40) {  // ~ 20 seconds at 500ms interval sample time
-          temperatureStable = true;
-          break;
-        }
-      } else stableCount = 0; // Reset if error is too high
-
-      if (millis() - slowLoopTimeStamp >= 900000) {
-        heaterError = true;
-        break;
-      }
-    }
-    modbus.poll();
-    wdt_reset();
-  }
-
-  if (heaterError) {
-    Serial.println("Heater error - timed out while trying to reach setpoint.");
-    setLED(LED_RED);
-    while (1);
-  }
-
-  Serial.printf("Reached setpoint %.2f °C in %.2f seconds\n\r", config.heaterSetpointC, (millis() - slowLoopTimeStamp) / 1000.0);
-
-  setLED(LED_GREEN);
-  delay(1000);
 
   Serial.println("Initialisation complete.");
+  uint8_t systemStatus = getErrorState(STATUS_SYSTEM_bp) | STATUS_SYSTEM_OK_bm;
+  setErrorState(STATUS_SYSTEM_bp, systemStatus);
+  
   slowLoopTimeStamp = millis();
   mediumLoopTimeStamp = millis();
   fastLoopTimeStamp = millis();
@@ -205,43 +182,55 @@ void loop() {
     if (FC > 0) {
       if (FC == 6 || FC == 16) {
         if (holdingToConfig()) {
-          // Add EEPROM.commit() here
+          static uint32_t lastConfigSave_ts = millis();
+          if (millis() - lastConfigSave_ts >= 5000) {
+            lastConfigSave_ts = millis();
+            Serial.println("Saving config to EEPROM...");
+            EEPROM.commit();
+          }
         }
       }
     }
     wdt_reset();
+    updateLED();
   }
 
   // ------------------------------------------------|
+
+  static uint32_t lastCO2Reading_ts = 0;
 
   // Medium loop - every 200ms -----------------------►►
   if (millis() - mediumLoopTimeStamp >= 200) {
     mediumLoopTimeStamp = millis();
 
+    
+
     // CO2 sensor management
-    CO2.manage();
+    if (CO2.manage()) {
+      lastCO2Reading_ts = millis();
+    }
 
     // O2 sensor calibration management
     static bool O2calibrating = false;
     if (O2.isCalibrating()) {
       if (!O2calibrating) {
         O2calibrating = true;
-        setLED(LED_BLUE);
+        systemState.state = STATE_CALIBRATING_O2;
       }    
       O2.manageCalibration();
     } else if (O2calibrating) {
       uint8_t error = O2.calibrationError();
       if (error == 0) {
         Serial.printf("O2 calibration complete, span coefficient: %.2f offset: %.2f\n\r", O2.getSpanCalibration(), O2.getZeroCalibration());
-        setLED(LED_GREEN);
+        systemState.state = STATE_NORMAL;
       } else {
         const char *errorMessage[4] = {"did not stabilise", "current below min", "current above max", "unknown error"};
         if (error > 3) error = 3;
         Serial.printf("O2 calibration error: %s\n\r", errorMessage[error]);
-        setLED(LED_RED);
+        systemState.state = STATE_ERROR;
       }
       O2calibrating = false;
-    } else updateLED();
+    }
   }
   // ------------------------------------------------|
 
@@ -250,16 +239,13 @@ void loop() {
   if (millis() - slowLoopTimeStamp >= 1000) {
     slowLoopTimeStamp = millis();
     
-    // Sensor reads
-    sht.measureHighPrecision(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
-    modbusInputRegisters.gasVP = vapourPressure(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
-    modbusInputRegisters.gasAH = absoluteHumidity(modbusInputRegisters.gasTempC, modbusInputRegisters.gasVP);
-    modbusInputRegisters.ambTempC = ntcAmb.temperature();
-    modbusInputRegisters.heatTempC = ntcHeat.temperature();
+    // Sensor reads    
+    updateHeaterTemp();
     heaterCtrl.update(modbusInputRegisters.heatTempC);
-    modbusInputRegisters.O2percent = O2.readO2(modbusInputRegisters.gasTempC);
-    modbusInputRegisters.CO2ppm = CO2.CO2();
-    modbusInputRegisters.CO2percent = modbusInputRegisters.CO2ppm / 10000.0;
+    updateAmbientTemp();
+    updateSHTmeasurements();
+    updateO2();
+    updateCO2(lastCO2Reading_ts);
 
     sensorsToInputs();
   }
@@ -272,52 +258,25 @@ void setLED(uint32_t colour) {
 }
 
 void updateLED() {
-  static uint32_t fadeStep = 0;
-  static uint32_t pulseStep = 0;
-  const uint32_t totalColorSteps = 300;  // 300 steps * 50ms = 15 seconds for full color cycle
-  const uint32_t totalPulseSteps = 120;  // 120 steps * 50ms = 6 seconds for full pulse cycle
-  const uint32_t stepsPerColorSegment = totalColorSteps / 3;  // 100 steps per color transition
-  
-  // Update color and pulse steps independently
-  fadeStep = (fadeStep + 1) % totalColorSteps;
-  pulseStep = (pulseStep + 1) % totalPulseSteps;
-  
-  // Calculate color
-  uint8_t r, g, b;
-  
-  if (fadeStep < stepsPerColorSegment) {
-    // Yellow to Green (fade out red)
-    r = 255 - (fadeStep * 255 / stepsPerColorSegment);
-    g = 255;
-    b = 0;
-  } else if (fadeStep < (stepsPerColorSegment * 2)) {
-    // Green to Cyan (fade in blue)
-    r = 0;
-    g = 255;
-    b = ((fadeStep - stepsPerColorSegment) * 255 / stepsPerColorSegment);
-  } else {
-    // Cyan to Yellow (fade out blue, fade in red)
-    r = ((fadeStep - (stepsPerColorSegment * 2)) * 255 / stepsPerColorSegment);
-    g = 255;
-    b = 255 - ((fadeStep - (stepsPerColorSegment * 2)) * 255 / stepsPerColorSegment);
+  static uint32_t timeStamp = millis();
+  static bool ledState = false;
+
+  if (systemState.state > 4) return;
+
+  uint32_t period = systemState.blinkHz[systemState.state] > 0 ? (500.0 / systemState.blinkHz[systemState.state]) : 0;
+  if (millis() - timeStamp >= period) {
+    timeStamp = millis();
+    if (period == 0) {
+      ledState = true;
+    } else {
+      ledState = !ledState;
+    }
+    if (ledState) {
+      setLED(systemState.colour[systemState.state]);
+    } else {
+      setLED(0x000000);
+    }
   }
-  
-  // Calculate brightness pulse (sine wave approximation)
-  // Pulse from ~10% to ~80% brightness
-  float brightnessFactor;
-  if (pulseStep < totalPulseSteps/2) {
-    // Rising edge: 10% to 80%
-    brightnessFactor = 0.1f + (0.7f * pulseStep / (totalPulseSteps/2.0f));
-  } else {
-    // Falling edge: 80% to 10%
-    brightnessFactor = 0.8f - (0.7f * (pulseStep - totalPulseSteps/2.0f) / (totalPulseSteps/2.0f));
-  }
-  
-  // Apply brightness to colors
-  led.setBrightness((uint8_t)(255 * brightnessFactor));
-  
-  led.setPixelColor(0, led.Color(r, g, b));
-  led.show();
 }
 
 uint16_t serialConfigFromParts(uint8_t parity, uint8_t stopBits, uint8_t dataBits) {
@@ -525,3 +484,149 @@ float absoluteHumidity(float temperatureC, float vapourPressure) {
   return (vapourPressure * 1000.0f) / (461.5f * (temperatureC + 273.15f));
 }
 
+void setErrorState(uint8_t statusItem_bp, uint8_t errorCode_bm) {
+  if (statusItem_bp > 31) return;
+  uint32_t statusBits = errorCode_bm << (statusItem_bp);
+  modbusHoldingRegisters.status &= ~(0x0F << statusItem_bp); // Clear existing bits
+  modbusHoldingRegisters.status |= statusBits;
+  memcpy(holding, &modbusHoldingRegisters.status, sizeof(uint32_t));
+
+  // Debug output
+  Serial.printf("Set status bits at bp %u to 0x%02X, new status: 0x%08X\n\r", statusItem_bp, errorCode_bm, modbusHoldingRegisters.status);
+}
+
+uint8_t getErrorState(uint8_t statusItem_bp) {
+  memcpy(&modbusHoldingRegisters.status, holding, sizeof(uint32_t));
+  if (statusItem_bp > 31) return 0;
+  return (modbusHoldingRegisters.status >> statusItem_bp) & 0x0F;
+}
+
+bool updateSHTmeasurements() {
+  static bool sensorError = false;
+  bool prevSensorError = sensorError;
+  uint16_t error = sht.measureHighPrecision(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
+  if (error) {
+    setErrorState(STATUS_GAS_TEMP_HUMIDITY_bp, STATUS_GAS_TEMP_HUMIDITY_SENOSR_ERROR_bm);
+    sensorError = true;
+  } else {
+    setErrorState(STATUS_GAS_TEMP_HUMIDITY_bp, STATUS_GAS_TEMP_HUMIDITY_OK_bm);
+    sensorError = false;
+    modbusInputRegisters.gasVP = vapourPressure(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
+    modbusInputRegisters.gasAH = absoluteHumidity(modbusInputRegisters.gasTempC, modbusInputRegisters.gasVP);
+  }
+  
+  if (sensorError) {
+    systemState.state = STATE_ERROR;
+    return false;
+  } else if (prevSensorError) {
+    systemState.state = STATE_NORMAL;
+  }
+  return true;
+}
+bool updateAmbientTemp() {
+  static bool sensorError = false;
+  bool prevSensorError = sensorError;
+  float temperature = ntcAmb.temperature();
+  if (isnan(temperature)) {
+    setErrorState(STATUS_AMB_TEMP_bp, STATUS_AMB_TEMP_SENSOR_ERROR_bm);
+    sensorError = true;
+  } else {
+    setErrorState(STATUS_AMB_TEMP_bp, STATUS_AMB_TEMP_OK_bm);
+    sensorError = false;
+  }
+  modbusInputRegisters.ambTempC = temperature;
+
+  if (sensorError) {
+    systemState.state = STATE_ERROR;
+    return false;
+  } else if (prevSensorError) {
+    systemState.state = STATE_NORMAL;
+  }
+  return true;
+}
+bool updateHeaterTemp() {
+  static bool sensorError = false;
+  bool prevSensorError = sensorError;
+
+  static uint32_t stableCount = 0;
+  bool wasUnstable = stableCount < 5 ? true : false;
+
+  float temperature = ntcHeat.temperature();
+  
+  if (isnan(temperature)) {
+    setErrorState(STATUS_HEATER_bp, STATUS_HEATER_SENSOR_ERROR_bm);
+    sensorError = true;
+  } else if (abs(temperature - heaterCtrl.getSetpoint()) > 0.2) {
+    setErrorState(STATUS_HEATER_bp, STATUS_HEATER_TEMP_UNSTABLE_bm);
+    systemState.state = STATE_TEMP_UNSTABLE;
+    stableCount = 0;
+    sensorError = false;
+  } else {
+    stableCount++;
+    if (stableCount >= 5) {
+      setErrorState(STATUS_HEATER_bp, STATUS_HEATER_OK_bm);
+    } else setErrorState(STATUS_HEATER_bp, STATUS_HEATER_TEMP_UNSTABLE_bm);
+    sensorError = false;
+  }
+  modbusInputRegisters.heatTempC = temperature;
+
+  if (sensorError) {
+    systemState.state = STATE_ERROR;
+    return false;
+  } else if (prevSensorError || wasUnstable) {
+    systemState.state = STATE_NORMAL;
+  }
+  return true;
+}
+bool updateO2() {
+  static bool sensorError = false;
+  bool prevSensorError = sensorError;
+
+  modbusInputRegisters.O2percent = O2.readO2(modbusInputRegisters.gasTempC);
+  if (modbusInputRegisters.O2percent < 1.0 || isnan(modbusInputRegisters.O2percent)) {
+    modbusInputRegisters.O2percent = 0.0;
+    setErrorState(STATUS_O2_SENSOR_bp, STATUS_O2_SENSOR_NOT_CONNECTED_bm);
+    sensorError = true;
+  }
+  else if (modbusInputRegisters.O2percent > 25.0) {
+    setErrorState(STATUS_O2_SENSOR_bp, STATUS_O2_SENSOR_TOO_HIGH_bm);
+    sensorError = true;
+  }
+  else {
+    setErrorState(STATUS_O2_SENSOR_bp, STATUS_O2_SENSOR_OK_bm);
+    sensorError = false;
+  }
+
+  if (sensorError) {
+    systemState.state = STATE_ERROR;
+    return false;
+  } else if (prevSensorError) {
+    systemState.state = STATE_NORMAL;
+  }
+  return true;
+}
+bool updateCO2(uint32_t lastReading_ts) {
+  static bool sensorError = false;
+  bool prevSensorError = sensorError;
+
+  if (millis() - lastReading_ts > CO2_MAX_DATA_AGE_MS) {
+    setErrorState(STATUS_CO2_SENSOR_bp, STATUS_CO2_SENSOR_NOT_CONNECTED_bm);
+    sensorError = true;
+  } else if (isnan(CO2.CO2())) {
+    setErrorState(STATUS_CO2_SENSOR_bp, STATUS_CO2_SENSOR_ERROR_bm);
+    sensorError = true;
+  }else {
+    setErrorState(STATUS_CO2_SENSOR_bp, STATUS_CO2_SENSOR_OK_bm);
+    sensorError = false;
+  }
+
+  if (sensorError) {
+    systemState.state = STATE_ERROR;
+    return false;
+  } else if (prevSensorError) {
+    systemState.state = STATE_NORMAL;
+  }
+  modbusInputRegisters.CO2ppm = CO2.CO2();
+  modbusInputRegisters.CO2percent = modbusInputRegisters.CO2ppm / 10000.0;
+  return true;
+}

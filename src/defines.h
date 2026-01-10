@@ -70,11 +70,84 @@ ModbusRTUSlave modbus(Serial1, PIN_RS485_DE);
 #define LED_WHITE 0xFFFFFF
 #define LED_OFF 0x000000
 
+// States and LED colours
+#define STATE_NORMAL 0
+#define STATE_STARTUP 1
+#define STATE_ERROR 2
+#define STATE_CALIBRATING_O2 3
+#define STATE_TEMP_UNSTABLE 4
+
+#define STATE_NORMAL_COLOUR LED_GREEN
+#define STATE_STARTUP_COLOUR LED_MAGENTA
+#define STATE_ERROR_COLOUR LED_RED
+#define STATE_CALIBRATING_O2_COLOUR LED_BLUE
+#define STATE_TEMP_UNSTABLE_COLOUR LED_AMBER
+
+#define STATE_NORMAL_BLINK_Hz 1
+#define STATE_STARTUP_BLINK_Hz 1
+#define STATE_ERROR_BLINK_Hz 0.5
+#define STATE_CALIBRATING_O2_BLINK_Hz 0.5
+#define STATE_TEMP_UNSTABLE_BLINK_Hz 0.5
+
+struct sysState {
+    uint8_t state;
+    uint32_t colour[5] = {  STATE_NORMAL_COLOUR,
+                            STATE_STARTUP_COLOUR,
+                            STATE_ERROR_COLOUR,
+                            STATE_CALIBRATING_O2_COLOUR,
+                            STATE_TEMP_UNSTABLE_COLOUR  };
+    float blinkHz[5] = {    STATE_NORMAL_BLINK_Hz,
+                            STATE_STARTUP_BLINK_Hz,
+                            STATE_ERROR_BLINK_Hz,
+                            STATE_CALIBRATING_O2_BLINK_Hz,
+                            STATE_TEMP_UNSTABLE_BLINK_Hz  };
+} systemState;
+
+// staus register definitions
+#define STATUS_SYSTEM_bp 0
+#define STATUS_O2_SENSOR_bp 4
+#define STATUS_CO2_SENSOR_bp 8
+#define STATUS_HEATER_bp 12
+#define STATUS_GAS_TEMP_HUMIDITY_bp 16
+#define STATUS_AMB_TEMP_bp 20
+#define STATUS_WDT_RESETS_bp 24
+
+// System status values
+#define STATUS_SYSTEM_OK_bm 0x01
+#define STATUS_SYSTEM_WDT_RESET_bm 0x02
+
+// O2 sensor status values
+#define STATUS_O2_SENSOR_OK_bm 0x01
+#define STATUS_O2_SENSOR_TOO_HIGH_bm 0x02
+#define STATUS_O2_SENSOR_NOT_CONNECTED_bm 0x04
+
+// CO2 sensor status values
+#define STATUS_CO2_SENSOR_OK_bm 0x01
+#define STATUS_CO2_SENSOR_NOT_CONNECTED_bm 0x02
+#define STATUS_CO2_SENSOR_ERROR_bm 0x04
+
+// Heater status values
+#define STATUS_HEATER_OK_bm 0x01
+#define STATUS_HEATER_TEMP_UNSTABLE_bm 0x02
+#define STATUS_HEATER_SENSOR_ERROR_bm 0x04
+
+// Gas temp and humidity sensor status values
+#define STATUS_GAS_TEMP_HUMIDITY_OK_bm 0x01
+#define STATUS_GAS_TEMP_HUMIDITY_SENOSR_ERROR_bm 0x02
+
+// Ambient temp sensor status values
+#define STATUS_AMB_TEMP_OK_bm 0x01
+#define STATUS_AMB_TEMP_SENSOR_ERROR_bm 0x02
+
+// CO2 constants
+#define CO2_MAX_DATA_AGE_MS 3000
+
 // EEPROM
 #define EEPROM_VERSION_BYTE 0xA0
 
 // Config array structure
 struct Config {
+    uint32_t wdtTimerResetCounter = 0;
     uint32_t modbusBaudrate = 9600;
     uint16_t modbusConfig = SERIAL_8N1;
     uint8_t modbusSlaveID = 100;
@@ -99,6 +172,7 @@ Config config;
 
 // Modbus structures
 struct ModbusHoldingRegisters {
+    uint32_t status = 0;
     uint16_t modbusSlaveID = 100;
     uint16_t modbusBaudrate = 960; // baudrate/10 to fit inside uint16
     uint16_t modbusStopBits = 1;

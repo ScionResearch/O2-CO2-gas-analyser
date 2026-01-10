@@ -13,6 +13,10 @@ void enableFaultExceptions() {
     SCB_SHCSR_USGFAULTENA_Msk;*/
 }
 
+bool wdtResetOccurred() {
+    return (PM->RCAUSE.reg & PM_RCAUSE_WDT) != 0;
+}
+
 char *resetReason() {
     uint8_t reason = PM->RCAUSE.reg;
     switch (reason) {
