@@ -2,7 +2,7 @@
 
 A precision gas analysis system built on the SAMD21 microcontroller platform, featuring simultaneous O2 and CO2 measurement with temperature-controlled sampling chamber and Modbus RTU communication.
 
-![Gas Analyser](images/Analyser.png)
+![Gas Analyser](images/analyser.png)
 
 ## Features
 
