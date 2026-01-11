@@ -423,7 +423,8 @@ bool holdingToConfig() {
     if (temp.heaterSetpointC >= 20.0 && temp.heaterSetpointC <= 50.0) {
       modbusHoldingRegisters.heaterSetpointC = temp.heaterSetpointC;
       config.heaterSetpointC = temp.heaterSetpointC;
-      configToSave = true;   
+      configToSave = true;
+      heaterCtrl.setpoint(config.heaterSetpointC);
       Serial.printf("Heater setpoint changed to %f\n\r", temp.heaterSetpointC);  
     }
   }
