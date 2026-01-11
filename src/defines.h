@@ -156,7 +156,7 @@ struct Config {
     float heaterKi = 0.5;
     float heaterKd = 0.0;
     float heaterMaxI = 90.0;
-    float heaterSetpointC = 35.0;
+    float heaterSetpointC = 30.0;
     float heaterMinAmbientDeltaC = 5.0;
     float o2CalibrationOffset = 0.06;
     float o2CalibrationScale = 0.2;
@@ -172,22 +172,23 @@ Config config;
 
 // Modbus structures
 struct ModbusHoldingRegisters {
-    uint32_t status = 0;
-    uint16_t modbusSlaveID = 100;
-    uint16_t modbusBaudrate = 960; // baudrate/10 to fit inside uint16
-    uint16_t modbusStopBits = 1;
-    uint16_t modbusParity = 0;
-    uint16_t modbus120Rterm = 0;
-    uint16_t O2SetZeroPoint = 0;
-    float O2SetXPoint = 0;
-    uint16_t CO2SetZeroPoint = 0;
-    float CO2SetXPoint = 0;
-    float heaterKp = 0;
-    float heaterKi = 0;
-    float heaterKd = 0;
-    float heaterMaxI = 0;
-    float heaterSetpointC = 0;
-    float heaterMinAmbientDeltaC = 0;
+    uint32_t status = 0;            // 0-1: System status register
+    uint16_t modbusSlaveID = 100;   // 2: Modbus slave ID
+    uint16_t modbusBaudrate = 960;  // 3: Modbus baudrate/10 to fit inside uint16
+    uint16_t modbusStopBits = 1;    // 4: Modbus stop bits
+    uint16_t modbusParity = 0;      // 5: Modbus parity
+    uint16_t modbus120Rterm = 0;    // 6: Modbus 120R termination resistor enabled/disabled
+    uint16_t reserved1 = 0;         // 7: Reserved for future use
+    uint16_t O2SetZeroPoint = 0;    // 8: O2 sensor zero point calibration
+    uint16_t CO2SetZeroPoint = 0;   // 9: CO2 sensor zero point calibration
+    float O2SetXPoint = 0;          // 10: O2 sensor span calibration point
+    float CO2SetXPoint = 0;         // 12: CO2 sensor span calibration point
+    float heaterKp = 0;             // 14: Heater proportional gain
+    float heaterKi = 0;             // 16: Heater integral gain
+    float heaterKd = 0;             // 18: Heater derivative gain
+    float heaterMaxI = 0;           // 20: Heater maximum integral term
+    float heaterSetpointC = 0;      // 22: Heater temperature setpoint in °C
+    float heaterMinAmbientDeltaC = 0;  // 24: Heater minimum ambient delta in °C
 };
 
 struct ModbusInputRegisters {

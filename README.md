@@ -78,16 +78,17 @@ Holding registers contain configuration and calibration parameters. Changes are 
 | 4 | modbusStopBits | uint16 | - | Stop bits (1-3) |
 | 5 | modbusParity | uint16 | - | Parity: 1=Even, 2=Odd, 3=None |
 | 6 | modbus120Rterm | uint16 | - | RS-485 termination: 0=Off, 1=On |
-| 7 | O2SetZeroPoint | uint16 | - | Write 1 to start O2 zero cal |
-| 8-9 | O2SetXPoint | float | % | O2 span cal point (10.0-25.0) |
-| 10 | CO2SetZeroPoint | uint16 | ppm | CO2 zero cal reference (1-4999) |
-| 11-12 | CO2SetXPoint | float | ppm | CO2 span cal point (300-50000) |
-| 13-14 | heaterKp | float | - | PID proportional gain |
-| 15-16 | heaterKi | float | - | PID integral gain |
-| 17-18 | heaterKd | float | - | PID derivative gain |
-| 19-20 | heaterMaxI | float | - | PID integral limit (0-255) |
-| 21-22 | heaterSetpointC | float | C | Heater setpoint (20.0-50.0) |
-| 23-24 | heaterMinAmbientDeltaC | float | C | Min delta above ambient (0-20) |
+| 7 | reserved1 | uint16 | - | Reserved for future use |
+| 8 | O2SetZeroPoint | uint16 | - | Write 1 to start O2 zero cal |
+| 9 | CO2SetZeroPoint | uint16 | ppm | CO2 zero cal reference (1-4999) |
+| 10-11 | O2SetXPoint | float | % | O2 span cal point (10.0-25.0) |
+| 12-13 | CO2SetXPoint | float | ppm | CO2 span cal point (300-50000) |
+| 14-15 | heaterKp | float | - | PID proportional gain |
+| 16-17 | heaterKi | float | - | PID integral gain |
+| 18-19 | heaterKd | float | - | PID derivative gain |
+| 20-21 | heaterMaxI | float | - | PID integral limit (0-255) |
+| 22-23 | heaterSetpointC | float | C | Heater setpoint (20.0-50.0) |
+| 24-25 | heaterMinAmbientDeltaC | float | C | Min delta above ambient (0-20) |
 
 #### Valid Baud Rate Values
 
