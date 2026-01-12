@@ -89,6 +89,7 @@ bool SGX40X::manageCalibration() {
     // Check for timeout
     if (millis() - _calibration_start_time > SGX40X_MAX_CAL_TIME_ms) {
         _calibration_error = 1; // Did not stabilize
+        _calibration_stable_count = 0;
         _is_calibrating = false;
         return false;
     }
@@ -127,6 +128,7 @@ bool SGX40X::manageCalibration() {
             if (SGX40X_DEBUG) Serial.printf("Current stable count %d: %.2f µA (last: %.2f µA)\n", _calibration_stable_count, current_uA, _calibration_last_read_current);
             
             if (_calibration_stable_count >= SGX40X_CAL_STABLE_POINTS) {
+                _calibration_stable_count = 0;
                 // Debug print
                 if (SGX40X_DEBUG) Serial.printf("Calibration successful after %d readings.\n", _calibration_stable_count);
                 
