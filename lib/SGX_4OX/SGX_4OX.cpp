@@ -8,16 +8,45 @@ SGX40X::SGX40X(int pin_sensor, int analog_read_resolution, float adc_ref_voltage
       _voltage_gain(voltage_gain),
       _offset_current_uA(SGX40X_DEFAULT_CURRENT_ZERO_uA),
       _span_coefficient(SGX40X_DEFAULT_SPAN_COEFFICIENT),
-      _is_calibrating(false) {
+      _is_calibrating(false),
+      _calibration_start_time(0),
+      _calibration_last_read_time(0),
+      _calibration_last_read_current(0.0f),
+      _calibration_point(0.0f),
+      _calibration_temperature(20.0f),
+      _calibration_error(0),
+      _calibration_stable_count(0),
+      _sample_sum_uA(0.0f),
+      _filtered_current_uA(0.0f),
+      _sample_count(0),
+      _has_filtered_current(false) {
 }
 
 // Debug only - print configuration to Serial
 void SGX40X::begin() { 
     pinMode(_pin_sensor, INPUT);
     analogRead(_pin_sensor); // Dummy read to set up ADC on some platforms
+    _sample_sum_uA = 0.0f;
+    _filtered_current_uA = 0.0f;
+    _sample_count = 0;
+    _has_filtered_current = false;
     if (!Serial) return;
     if (SGX40X_DEBUG) Serial.printf("SGX40X sensor pin: %d, ADC full scale: %d, ADC ref voltage: %.2fV, Ref resistance: %.2f Ohm, Voltage gain: %.2f\n",
                   _pin_sensor, _analog_full_scale, _adc_ref_voltage, _ref_resistance, _voltage_gain);
+}
+
+bool SGX40X::sampleStep(uint8_t targetSamples) {
+    if (targetSamples == 0) targetSamples = 1;
+    _sample_sum_uA += getMicroAmps(analogRead(_pin_sensor));
+    _sample_count++;
+    if (_sample_count >= targetSamples) {
+        _filtered_current_uA = _sample_sum_uA / (float)_sample_count;
+        _sample_sum_uA = 0.0f;
+        _sample_count = 0;
+        _has_filtered_current = true;
+        return true;
+    }
+    return false;
 }
 
 float SGX40X::getMicroAmps(int adc_raw) {
@@ -44,9 +73,13 @@ float SGX40X::getTempCompensationFactor(float temperature_c) {
 }
 
 float SGX40X::readO2() {
-    float current_uA = 0;
-    for (int i = 0; i < 10; i++) current_uA += getMicroAmps(analogRead(_pin_sensor));
-    current_uA /= 10.0; // Average over 10 readings
+    float current_uA = 0.0f;
+    if (_has_filtered_current) {
+        current_uA = _filtered_current_uA;
+    } else {
+        for (int i = 0; i < 10; i++) current_uA += getMicroAmps(analogRead(_pin_sensor));
+        current_uA /= 10.0f; // Average over 10 readings on initial/cold call
+    }
     return (current_uA - _offset_current_uA) * _span_coefficient;
 }
 

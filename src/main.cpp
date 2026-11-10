@@ -3,7 +3,7 @@
 
 uint32_t slowLoopTimeStamp = 0;
 uint32_t mediumLoopTimeStamp = 0;
-uint32_t fastLoopTimeStamp = 0;
+uint32_t adcSampleTimeStamp = 0;
 
 // Forward declarations
 void setLED(uint32_t colour);
@@ -17,7 +17,9 @@ float vapourPressure(float temperatureC, float relativeHumidity);
 float absoluteHumidity(float temperatureC, float vapourPressure);
 void setErrorState(uint8_t statusItem_bp, uint8_t errorCode_bm);
 uint8_t getErrorState(uint8_t statusItem_bp);
-bool updateSHTmeasurements();
+bool startSHTmeasurement();
+bool finishSHTmeasurement();
+void applySHTResult(bool hasError);
 bool updateAmbientTemp();
 bool updateHeaterTemp();
 bool updateO2();
@@ -59,6 +61,7 @@ void setup() {
     Serial.printf("  modbusBaudrate: %u\n\r", config.modbusBaudrate);
     Serial.printf("  modbusConfig: %u\n\r", config.modbusConfig);
     Serial.printf("  modbusSlaveID: %u\n\r", config.modbusSlaveID);
+    Serial.printf("  modbus120Rterm: %u\n\r", config.modbus120Rterm);
     Serial.printf("  heaterKp: %.2f\n\r", config.heaterKp);
     Serial.printf("  heaterKi: %.2f\n\r", config.heaterKi);
     Serial.printf("  heaterKd: %.2f\n\r", config.heaterKd);
@@ -87,7 +90,11 @@ void setup() {
   }
   setErrorState(STATUS_WDT_RESETS_bp, wdtCount);
   Serial.printf("Reset reason: %s\n\r", resetReason());
- 
+
+  // Initialize RS-485 bus termination from EEPROM config (off by default)
+  config.modbus120Rterm = config.modbus120Rterm ? 1 : 0;
+  pinMode(PIN_RS485_TERM, OUTPUT);
+  digitalWrite(PIN_RS485_TERM, config.modbus120Rterm ? HIGH : LOW);
 
   Serial.println("O2-CO2 Gas Analyser Starting...");
 
@@ -170,40 +177,55 @@ void setup() {
   
   slowLoopTimeStamp = millis();
   mediumLoopTimeStamp = millis();
-  fastLoopTimeStamp = millis();
+  adcSampleTimeStamp = millis();
 }
 
 
 void loop() {
-  // Fast loop - every cycle -------------------►►►
-  if (millis() - fastLoopTimeStamp >= 50) {
-    fastLoopTimeStamp = millis();
-    int FC = modbus.poll();
-    if (FC > 0) {
-      if (FC == 6 || FC == 16) {
-        if (holdingToConfig()) {
-          static uint32_t lastConfigSave_ts = millis();
-          if (millis() - lastConfigSave_ts >= 5000) {
-            lastConfigSave_ts = millis();
-            Serial.println("Saving config to EEPROM...");
-            EEPROM.commit();
-          }
-        }
+  // Fast loop - every cycle (no artificial gate; keeps Serial1 drained before t3.5 gaps)
+  int FC = modbus.poll();
+  static bool eepromDirty = false;
+  static uint32_t lastConfigSave_ts = 0;
+  if (FC > 0) {
+    if (FC == 6 || FC == 16) {
+      if (holdingToConfig()) {
+        eepromDirty = true;
       }
     }
-    wdt_reset();
-    updateLED();
   }
+  if (eepromDirty && millis() - lastConfigSave_ts >= 5000) {
+    lastConfigSave_ts = millis();
+    eepromDirty = false;
+    Serial.println("Saving config to EEPROM...");
+    EEPROM.commit();
+  }
+  wdt_reset();
+  updateLED();
 
   // ------------------------------------------------|
 
   static uint32_t lastCO2Reading_ts = 0;
 
-  // Medium loop - every 200ms -----------------------►►
-  if (millis() - mediumLoopTimeStamp >= 200) {
-    mediumLoopTimeStamp = millis();
+  // Non-blocking ADC round-robin (1 analogRead ~= 50 us per loop pass)
+  bool didWorkThisPass = false;
+  if (millis() - adcSampleTimeStamp >= 10) {
+    adcSampleTimeStamp = millis();
+    static uint8_t adcChannel = 0;
+    if (adcChannel == 0) {
+      ntcHeat.sampleStep();
+    } else if (adcChannel == 1) {
+      ntcAmb.sampleStep();
+    } else {
+      O2.sampleStep(10);
+    }
+    adcChannel = (adcChannel + 1) % 3;
+    didWorkThisPass = true;
+  }
 
-    
+  // Medium loop - every 200ms -----------------------►►
+  if (!didWorkThisPass && millis() - mediumLoopTimeStamp >= 200) {
+    mediumLoopTimeStamp = millis();
+    didWorkThisPass = true;
 
     // CO2 sensor management
     if (CO2.manage()) {
@@ -239,20 +261,88 @@ void loop() {
   }
   // ------------------------------------------------|
 
-  // Slow loop - every 1000ms -----------------------►
+  // Staggered non-blocking 1000ms sensor update cycle (< 1 ms per pass)
+  enum SlowPhase : uint8_t {
+    SLOW_WAIT_CYCLE = 0,
+    SLOW_HEATER,
+    SLOW_AMBIENT,
+    SLOW_SHT_CMD,
+    SLOW_SHT_WAIT_READ,
+    SLOW_O2,
+    SLOW_CO2,
+    SLOW_PUBLISH
+  };
+  static SlowPhase slowPhase = SLOW_WAIT_CYCLE;
+  static uint32_t slowStepTimeStamp = 0;
+  static uint32_t shtCmdTimeStamp = 0;
 
-  if (millis() - slowLoopTimeStamp >= 1000) {
-    slowLoopTimeStamp = millis();
-    
-    // Sensor reads    
-    updateHeaterTemp();
-    heaterCtrl.update(modbusInputRegisters.heatTempC);
-    updateAmbientTemp();
-    updateSHTmeasurements();
-    updateO2();
-    updateCO2(lastCO2Reading_ts);
-
-    sensorsToInputs();
+  if (!didWorkThisPass) {
+    uint32_t nowMs = millis();
+    switch (slowPhase) {
+      case SLOW_WAIT_CYCLE:
+        if (nowMs - slowLoopTimeStamp >= 1000) {
+          slowLoopTimeStamp = nowMs;
+          slowStepTimeStamp = nowMs;
+          slowPhase = SLOW_HEATER;
+        }
+        break;
+      case SLOW_HEATER:
+        if (nowMs - slowStepTimeStamp >= 5) {
+          updateHeaterTemp();
+          heaterCtrl.update(modbusInputRegisters.heatTempC);
+          slowStepTimeStamp = nowMs;
+          slowPhase = SLOW_AMBIENT;
+        }
+        break;
+      case SLOW_AMBIENT:
+        if (nowMs - slowStepTimeStamp >= 5) {
+          updateAmbientTemp();
+          slowStepTimeStamp = nowMs;
+          slowPhase = SLOW_SHT_CMD;
+        }
+        break;
+      case SLOW_SHT_CMD:
+        if (nowMs - slowStepTimeStamp >= 5) {
+          if (startSHTmeasurement()) {
+            shtCmdTimeStamp = nowMs;
+            slowPhase = SLOW_SHT_WAIT_READ;
+          } else {
+            applySHTResult(true);
+            slowStepTimeStamp = nowMs;
+            slowPhase = SLOW_O2;
+          }
+        }
+        break;
+      case SLOW_SHT_WAIT_READ:
+        if (nowMs - shtCmdTimeStamp >= 12) {
+          bool ok = finishSHTmeasurement();
+          applySHTResult(!ok);
+          slowStepTimeStamp = nowMs;
+          slowPhase = SLOW_O2;
+        }
+        break;
+      case SLOW_O2:
+        if (nowMs - slowStepTimeStamp >= 5) {
+          updateO2();
+          slowStepTimeStamp = nowMs;
+          slowPhase = SLOW_CO2;
+        }
+        break;
+      case SLOW_CO2:
+        if (nowMs - slowStepTimeStamp >= 5) {
+          updateCO2(lastCO2Reading_ts);
+          slowStepTimeStamp = nowMs;
+          slowPhase = SLOW_PUBLISH;
+        }
+        break;
+      case SLOW_PUBLISH:
+        if (nowMs - slowStepTimeStamp >= 5) {
+          sensorsToInputs();
+          slowStepTimeStamp = nowMs;
+          slowPhase = SLOW_WAIT_CYCLE;
+        }
+        break;
+    }
   }
   // ------------------------------------------------|
 }
@@ -265,20 +355,28 @@ void setLED(uint32_t colour) {
 void updateLED() {
   static uint32_t timeStamp = millis();
   static bool ledState = false;
+  static uint32_t lastColour = 0xFFFFFFFFUL;
 
   if (systemState.state > 4) return;
 
+  uint32_t targetColour = systemState.colour[systemState.state];
   uint32_t period = systemState.blinkHz[systemState.state] > 0 ? (500.0 / systemState.blinkHz[systemState.state]) : 0;
+  if (period == 0) {
+    if (!ledState || lastColour != targetColour) {
+      ledState = true;
+      lastColour = targetColour;
+      setLED(targetColour);
+    }
+    return;
+  }
   if (millis() - timeStamp >= period) {
     timeStamp = millis();
-    if (period == 0) {
-      ledState = true;
-    } else {
-      ledState = !ledState;
-    }
+    ledState = !ledState;
     if (ledState) {
-      setLED(systemState.colour[systemState.state]);
+      lastColour = targetColour;
+      setLED(targetColour);
     } else {
+      lastColour = 0x000000;
       setLED(0x000000);
     }
   }
@@ -377,12 +475,12 @@ bool holdingToConfig() {
     Serial.printf("Modbus config changed to %04X\n\r", config.modbusConfig);
   }
   if (temp.modbus120Rterm != modbusHoldingRegisters.modbus120Rterm) {
-    if (temp.modbus120Rterm >= 0 && temp.modbus120Rterm < 2) {
+    if (temp.modbus120Rterm < 2) {
       modbusHoldingRegisters.modbus120Rterm = temp.modbus120Rterm;
       config.modbus120Rterm = temp.modbus120Rterm;
-      digitalWrite(PIN_RS485_TERM, (bool)temp.modbus120Rterm);
+      digitalWrite(PIN_RS485_TERM, config.modbus120Rterm ? HIGH : LOW);
       configToSave = true;
-      Serial.printf("Modbus 120R term changed to %s\n\r", temp.modbus120Rterm ? "temrinated" : "un-terminated");
+      Serial.printf("Modbus 120R term changed to %s\n\r", temp.modbus120Rterm ? "terminated" : "un-terminated");
     }
   }
 
@@ -504,11 +602,37 @@ uint8_t getErrorState(uint8_t statusItem_bp) {
   return (modbusHoldingRegisters.status >> statusItem_bp) & 0x0F;
 }
 
-bool updateSHTmeasurements() {
+bool startSHTmeasurement() {
+  uint8_t cmdBuf[6] = {0};
+  SensirionI2CTxFrame txFrame = SensirionI2CTxFrame::createWithUInt8Command(
+      SHT4X_MEASURE_HIGH_PRECISION_TICKS_CMD_ID, cmdBuf, sizeof(cmdBuf));
+  uint16_t error = SensirionI2CCommunication::sendFrame(SHT40_I2C_ADDR_44, txFrame, Wire);
+  return (error == NoError);
+}
+
+bool finishSHTmeasurement() {
+  uint8_t rxBuf[6] = {0};
+  SensirionI2CRxFrame rxFrame(rxBuf, sizeof(rxBuf));
+  uint16_t error = SensirionI2CCommunication::receiveFrame(SHT40_I2C_ADDR_44, sizeof(rxBuf), rxFrame, Wire);
+  if (error != NoError) {
+    return false;
+  }
+  uint16_t tempTicks = 0;
+  uint16_t humiTicks = 0;
+  error |= rxFrame.getUInt16(tempTicks);
+  error |= rxFrame.getUInt16(humiTicks);
+  if (error != NoError) {
+    return false;
+  }
+  modbusInputRegisters.gasTempC = SensirionI2cSht4x::signalTemperature(tempTicks);
+  modbusInputRegisters.gasRH = SensirionI2cSht4x::signalHumidity(humiTicks);
+  return true;
+}
+
+void applySHTResult(bool hasError) {
   static bool sensorError = false;
   bool prevSensorError = sensorError;
-  uint16_t error = sht.measureHighPrecision(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
-  if (error) {
+  if (hasError) {
     setErrorState(STATUS_GAS_TEMP_HUMIDITY_bp, STATUS_GAS_TEMP_HUMIDITY_SENOSR_ERROR_bm);
     sensorError = true;
   } else {
@@ -517,14 +641,12 @@ bool updateSHTmeasurements() {
     modbusInputRegisters.gasVP = vapourPressure(modbusInputRegisters.gasTempC, modbusInputRegisters.gasRH);
     modbusInputRegisters.gasAH = absoluteHumidity(modbusInputRegisters.gasTempC, modbusInputRegisters.gasVP);
   }
-  
+
   if (sensorError) {
     systemState.state = STATE_ERROR;
-    return false;
   } else if (prevSensorError && systemState.state != STATE_CALIBRATING_O2) {
     systemState.state = STATE_NORMAL;
   }
-  return true;
 }
 bool updateAmbientTemp() {
   static bool sensorError = false;
