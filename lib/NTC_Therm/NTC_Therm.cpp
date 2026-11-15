@@ -176,4 +176,3 @@ void NTC_Therm::disableOversampling() {
     _osSum = 0;
     _osCount = 0;
 }
-

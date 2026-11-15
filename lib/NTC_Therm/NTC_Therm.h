@@ -74,4 +74,3 @@ private:
     bool _lastConnected = false;
     float _latestTempC = NAN;
 };
-
