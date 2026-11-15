@@ -437,9 +437,17 @@ Board-ID `SAMD21E18A-GA-M0`, and mounts as `GA_BOOT`. Application firmware
 identifies as `BSI Gas Analyser M0`.
 
 USB enumeration alone does not prove sensor initialization or main-loop health.
-Capture the startup console to check initialization and configuration. Uploads
-may affect flash-backed configuration; save calibration/configuration before
-uploading and do not erase or recalibrate as a verification shortcut.
+Capture the startup console to check initialization and configuration. The
+current full-image UF2 includes the flash-backed EEPROM area: a bench upload
+reported `Got EEPROM version: 0xFF, expected: 0xA0` and wrote default
+configuration/calibration. An unchanged `EEPROM_VERSION_BYTE` does not prevent
+this. Save calibration/configuration before uploading, and plan explicit
+restoration or recalibration before measurement use; do not assume an upload
+preserves calibration.
+
+A bootloader `CURRENT.UF2` readback can help recover stored configuration, but
+is not automatically a bootable rollback image. The bench readback had an erased
+application vector-table block; validate a recovery image before using it.
 
 ### Dependencies
 
