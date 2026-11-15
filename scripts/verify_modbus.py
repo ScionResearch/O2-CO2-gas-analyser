@@ -164,25 +164,7 @@ def verify_heater_setpoint(instrument, target, wait_seconds, verify_persistence)
     print("PASS: heater setpoint write and post-write Modbus responsiveness")
 
 
-def run_o2_span(instrument, span):
-    if not 10.0 <= span <= 25.0:
-        raise ValueError("O2 span must be between 10 and 25 percent")
-
-    gas_temp = read_float(instrument, INPUT_GAS_TEMP_C, 4)
-    if not math.isfinite(gas_temp):
-        raise RuntimeError("gas temperature is invalid; refusing O2 span calibration")
-
-    print(
-        f"Sending O2 span point {span:.2f}% to holding registers "
-        f"{HOLDING_O2_SPAN}-{HOLDING_O2_SPAN + 1}."
-    )
-    instrument.write_registers(HOLDING_O2_SPAN, float_to_registers(span))
-    print(
-        "Calibration may take up to 60 seconds. Modbus does not expose a "
-        "calibration-complete bit; verify the USB console reports "
-        "'O2 calibration complete' and check the final status/readings."
-    )
-
+def poll_o2_span(instrument, span, phase):
     deadline = time.monotonic() + 60.0
     stable_readings = 0
     while time.monotonic() < deadline:
@@ -200,16 +182,54 @@ def run_o2_span(instrument, span):
             if stable_readings >= 3:
                 print(
                     "READBACK OK: O2 is stable near the span point. "
-                    "Confirm the USB console reports calibration completion."
+                    f"Verified {phase}."
                 )
                 return
         else:
             stable_readings = 0
 
     raise RuntimeError(
-        "O2 readback did not settle near the span point within 60 seconds; "
-        "inspect analyser USB console diagnostics"
+        f"O2 readback did not settle near the span point {phase} within "
+        "60 seconds; inspect analyser USB console diagnostics"
     )
+
+
+def run_o2_span(instrument, span, verify_persistence):
+    if not 10.0 <= span <= 25.0:
+        raise ValueError("O2 span must be between 10 and 25 percent")
+
+    gas_temp = read_float(instrument, INPUT_GAS_TEMP_C, 4)
+    if not math.isfinite(gas_temp):
+        raise RuntimeError("gas temperature is invalid; refusing O2 span calibration")
+
+    print(
+        f"Sending O2 span point {span:.2f}% to holding registers "
+        f"{HOLDING_O2_SPAN}-{HOLDING_O2_SPAN + 1}."
+    )
+    instrument.write_registers(HOLDING_O2_SPAN, float_to_registers(span))
+    print(
+        "Calibration may take up to 60 seconds. Modbus does not expose a "
+        "calibration-complete bit; verify the USB console reports "
+        "'O2 calibration complete' and that the new values were saved."
+    )
+    poll_o2_span(instrument, span, "after calibration")
+
+    if verify_persistence:
+        completion_confirmed = input(
+            "Did the USB console report successful calibration and saved "
+            "values? Type yes to continue: "
+        )
+        if completion_confirmed.strip().lower() not in ("y", "yes"):
+            raise RuntimeError("USB console did not confirm saved O2 calibration")
+
+        persistence_confirmed = input(
+            "Keep ambient air flowing, power-cycle the analyser, confirm the "
+            "USB startup log shows the saved O2 span coefficient, wait for "
+            "Modbus to return, then type yes: "
+        )
+        if persistence_confirmed.strip().lower() not in ("y", "yes"):
+            raise RuntimeError("USB console did not confirm O2 calibration persistence")
+        poll_o2_span(instrument, span, "after power cycle")
 
 
 def make_parser():
@@ -218,7 +238,9 @@ def make_parser():
     )
     parser.add_argument("--port", required=True, help="RS-485 serial port, e.g. /dev/ttyUSB0")
     parser.add_argument("--slave-id", type=int, default=100)
-    parser.add_argument("--baudrate", type=int, default=9600)
+    parser.add_argument("--baudrate", type=int, default=19200)
+    parser.add_argument("--parity", choices=("N", "E", "O"), default="E")
+    parser.add_argument("--stopbits", type=int, choices=(1, 2), default=2)
     parser.add_argument("--timeout", type=float, default=1.0)
     parser.add_argument(
         "--heater-setpoint-test",
@@ -239,7 +261,7 @@ def make_parser():
     parser.add_argument(
         "--verify-persistence",
         action="store_true",
-        help="prompt for a power cycle and verify the test setpoint persisted",
+        help="prompt for a power cycle and verify the heater setpoint or O2 span persisted",
     )
     parser.add_argument(
         "--o2-span-air",
@@ -267,8 +289,8 @@ def open_instrument(args):
     instrument = minimalmodbus.Instrument(args.port, args.slave_id)
     instrument.serial.baudrate = args.baudrate
     instrument.serial.bytesize = 8
-    instrument.serial.parity = "N"
-    instrument.serial.stopbits = 1
+    instrument.serial.parity = args.parity
+    instrument.serial.stopbits = args.stopbits
     instrument.serial.timeout = args.timeout
     instrument.clear_buffers_before_each_transaction = True
     return instrument
@@ -284,8 +306,14 @@ def main():
         parser.error("heater test requires --confirm-heater-write")
     if args.o2_span_air is not None and not args.confirm_o2_span:
         parser.error("O2 span calibration requires --confirm-o2-span")
-    if args.verify_persistence and args.heater_setpoint_test is None:
-        parser.error("--verify-persistence requires --heater-setpoint-test")
+    if (
+        args.verify_persistence
+        and args.heater_setpoint_test is None
+        and args.o2_span_air is None
+    ):
+        parser.error(
+            "--verify-persistence requires --heater-setpoint-test or --o2-span-air"
+        )
     if args.confirm_heater_write and args.heater_setpoint_test is None:
         parser.error("--confirm-heater-write requires --heater-setpoint-test")
     if args.confirm_o2_span and args.o2_span_air is None:
@@ -301,7 +329,7 @@ def main():
                 args.verify_persistence,
             )
         elif args.o2_span_air is not None:
-            run_o2_span(instrument, args.o2_span_air)
+            run_o2_span(instrument, args.o2_span_air, args.verify_persistence)
         else:
             print_snapshot(instrument)
     finally:

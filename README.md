@@ -345,7 +345,11 @@ python3 -m pip install minimalmodbus
 
 The analyser's USB CDC connection is a diagnostic console, not Modbus. The
 `--port` below must be a USB-RS485 adapter connected to the analyser's RS-485
-bus. Use the USB console separately to inspect calibration completion logs.
+bus. Do not connect a second Modbus master while the ORC is using the same bus.
+Use the USB console separately to inspect calibration completion logs. The
+script defaults to the analyser firmware's 19200 baud, 8 data bits, even parity,
+and two stop bits; use `--baudrate`, `--parity`, or `--stopbits` only when the
+device has a different saved Modbus configuration.
 
 Inspect live measurements, heater setpoint, and status bits without writing:
 
@@ -375,7 +379,10 @@ python3 scripts/verify_modbus.py --port /dev/ttyUSB0 \
 
 Span calibration updates persistent O2 calibration values. The script polls
 O2 readback and status for up to 60 seconds; confirm completion from the USB
-console log.
+console log. Add `--verify-persistence` to confirm the successful-save message,
+power-cycle while ambient air remains stable, confirm the startup console shows
+the saved span coefficient, and verify that Modbus O2 readback remains stable
+near the span point after reboot.
 
 Run the host-side verifier tests without hardware or serial dependencies:
 
