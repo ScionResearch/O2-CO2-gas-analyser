@@ -148,8 +148,8 @@ struct sysState {
 // Config array structure
 struct Config {
     uint32_t wdtTimerResetCounter = 0;
-    uint32_t modbusBaudrate = 9600;
-    uint16_t modbusConfig = SERIAL_8N1;
+    uint32_t modbusBaudrate = 19200;
+    uint16_t modbusConfig = SERIAL_8E2;
     uint8_t modbusSlaveID = 100;
     uint8_t modbus120Rterm = 0;
     float heaterKp = 100.0;
@@ -174,9 +174,9 @@ Config config;
 struct ModbusHoldingRegisters {
     uint32_t status = 0;            // 0-1: System status register
     uint16_t modbusSlaveID = 100;   // 2: Modbus slave ID
-    uint16_t modbusBaudrate = 960;  // 3: Modbus baudrate/10 to fit inside uint16
-    uint16_t modbusStopBits = 1;    // 4: Modbus stop bits
-    uint16_t modbusParity = 0;      // 5: Modbus parity
+    uint16_t modbusBaudrate = 1920; // 3: Modbus baudrate/10 to fit inside uint16
+    uint16_t modbusStopBits = 3;    // 4: 3 encodes two stop bits
+    uint16_t modbusParity = 1;      // 5: 1 encodes even parity
     uint16_t modbus120Rterm = 0;    // 6: Modbus 120R termination resistor enabled/disabled
     uint16_t reserved1 = 0;         // 7: Reserved for future use
     uint16_t O2SetZeroPoint = 0;    // 8: O2 sensor zero point calibration

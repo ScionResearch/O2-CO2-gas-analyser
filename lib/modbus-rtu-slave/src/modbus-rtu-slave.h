@@ -25,7 +25,7 @@ class ModbusRTUSlave {
     void configureInputRegisters(uint16_t inputRegisters[], uint16_t numInputRegisters);
     void begin(uint8_t id, uint32_t baud, uint16_t config = SERIAL_8N1);
     int poll();
-    
+
   private:
     HardwareSerial *_hardwareSerial;
     #ifdef __AVR__
@@ -37,6 +37,10 @@ class ModbusRTUSlave {
     Stream *_serial;
     uint8_t _dePin;
     uint8_t _buf[MODBUS_RTU_SLAVE_BUF_SIZE];
+    uint8_t _rxBuf[MODBUS_RTU_SLAVE_BUF_SIZE];
+    uint16_t _rxLen = 0;
+    uint32_t _lastRxTime = 0;
+    uint32_t _baud = 9600;
     bool *_coils;
     bool *_discreteInputs;
     uint16_t *_holdingRegisters;
@@ -45,9 +49,9 @@ class ModbusRTUSlave {
     uint16_t _numDiscreteInputs = 0;
     uint16_t _numHoldingRegisters = 0;
     uint16_t _numInputRegisters = 0;
-    uint8_t _id;
-    uint32_t _charTimeout;
-    uint32_t _frameTimeout;
+    uint8_t _id = NO_ID;
+    uint32_t _charTimeout = 0;
+    uint32_t _frameTimeout = 0;
 
     void _processReadCoils();
     void _processReadDiscreteInputs();
@@ -61,9 +65,14 @@ class ModbusRTUSlave {
     bool _readRequest();
     void _writeResponse(uint8_t len);
     void _exceptionResponse(uint8_t code);
+    void _consumeRx(uint16_t count);
+    static bool _isSupportedFc(uint8_t fc);
+    static uint16_t _reqLenForFc(const uint8_t *buf, uint16_t avail);
+    bool _hasValidAddressedFrameFrom(uint16_t startIdx) const;
 
-    void _calculateTimeouts(uint32_t baud, uint8_t config);
+    void _calculateTimeouts(uint32_t baud, uint16_t config);
     uint16_t _crc(uint16_t len);
+    static uint16_t _crcBuf(const uint8_t *buf, uint16_t len);
     uint16_t _div8RndUp(uint16_t value);
     uint16_t _bytesToWord(uint8_t high, uint8_t low);
 };

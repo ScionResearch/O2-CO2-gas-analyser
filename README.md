@@ -32,10 +32,13 @@ A precision gas analysis system built on the SAMD21 microcontroller platform, fe
 | Parameter | Default Value |
 |-----------|---------------|
 | Slave ID | 100 |
-| Baud Rate | 9600 |
+| Baud Rate | 19200 |
 | Data Bits | 8 |
-| Parity | None |
-| Stop Bits | 1 |
+| Parity | Even |
+| Stop Bits | 2 |
+
+These defaults match the CM5 ORC RS-485 Port 2 bus (19200 8E2). Keep the ORC
+port settings unchanged when it is shared with other devices.
 
 ### Supported Function Codes
 
@@ -50,9 +53,14 @@ A precision gas analysis system built on the SAMD21 microcontroller platform, fe
 
 ## Register Definitions
 
+Register addresses are zero-based. Multi-register IEEE-754 floats use
+low-word-first order: the lower address contains the low 16-bit word. Bytes
+within each 16-bit Modbus register remain in standard Modbus order.
+
 ### Input Registers (Function Code 04) - Read Only
 
-Input registers contain sensor measurements. All floating-point values are stored as IEEE 754 single-precision (32-bit) spanning two consecutive 16-bit registers in big-endian order.
+Input registers contain sensor measurements. Floating-point values are
+IEEE-754 single-precision (32-bit) values spanning two consecutive registers.
 
 | Address | Name | Type | Unit | Description |
 |---------|------|------|------|-------------|
@@ -186,8 +194,8 @@ def read_float(client, address, slave_id):
     result = client.read_input_registers(address, 2, slave=slave_id)
     if result.isError():
         return None
-    # Combine two 16-bit registers into a 32-bit float (big-endian)
-    raw = (result.registers[0] << 16) | result.registers[1]
+    # Register order is low word first; bytes inside each register are big-endian.
+    raw = (result.registers[1] << 16) | result.registers[0]
     return struct.unpack('>f', struct.pack('>I', raw))[0]
 
 # Read all sensor values
@@ -216,7 +224,7 @@ def parse_status(client, slave_id):
     if result.isError():
         return None
     
-    status = (result.registers[0] << 16) | result.registers[1]
+    status = result.registers[0] | (result.registers[1] << 16)
     
     # Extract each nibble
     system_status = status & 0x0F
@@ -255,17 +263,17 @@ parse_status(client, SLAVE_ID)
 ```python
 def write_float(client, address, value, slave_id):
     """Write a 32-bit float to two consecutive holding registers."""
-    # Pack float as big-endian 32-bit
+    # The lower address contains the low 16-bit word.
     raw = struct.unpack('>I', struct.pack('>f', value))[0]
-    high_word = (raw >> 16) & 0xFFFF
     low_word = raw & 0xFFFF
+    high_word = (raw >> 16) & 0xFFFF
     
     # Write both registers
-    result = client.write_registers(address, [high_word, low_word], slave=slave_id)
+    result = client.write_registers(address, [low_word, high_word], slave=slave_id)
     return not result.isError()
 
 # Set heater setpoint to 40C
-if write_float(client, 21, 40.0, SLAVE_ID):
+if write_float(client, 22, 40.0, SLAVE_ID):
     print("Heater setpoint updated to 40C")
 else:
     print("Failed to update heater setpoint")
@@ -299,24 +307,24 @@ The O2 sensor supports two-point calibration: zero (0% O2) and span (typically 2
 
 1. Flow nitrogen or other zero-O2 gas through the sensor
 2. Wait for readings to stabilise
-3. Write `1` to register 7 (`O2SetZeroPoint`)
+3. Write `1` to register 8 (`O2SetZeroPoint`)
 
 ```python
 # Start O2 zero calibration
-client.write_register(7, 1, slave=SLAVE_ID)
+client.write_register(8, 1, slave=SLAVE_ID)
 # Calibration takes up to 60 seconds
-# Monitor status - system enters STATE_CALIBRATING_O2
+# Monitor the blue LED and USB console for calibration progress and result.
 ```
 
 #### Span Calibration (e.g., 20.9% O2)
 
 1. Flow calibration gas (e.g., ambient air at 20.9% O2)
 2. Wait for readings to stabilise
-3. Write the known O2 percentage as a float to registers 8-9
+3. Write the known O2 percentage as a float to registers 10-11
 
 ```python
 # Calibrate with 20.9% O2 (ambient air)
-write_float(client, 8, 20.9, SLAVE_ID)
+write_float(client, 10, 20.95, SLAVE_ID)
 # Calibration takes up to 60 seconds
 ```
 
@@ -324,6 +332,60 @@ write_float(client, 8, 20.9, SLAVE_ID)
 - Sensor current must be within 70-130 uA for air
 - Reading must stabilise (+/-0.1 uA for 5 consecutive readings)
 - Maximum calibration time: 60 seconds
+- The Modbus status register has no calibration-complete bit. Check the USB
+  console for `O2 calibration complete` or the reported calibration error.
+
+### Engineer Verification Script
+
+Install the only Python dependency:
+
+```bash
+python3 -m pip install minimalmodbus
+```
+
+The analyser's USB CDC connection is a diagnostic console, not Modbus. The
+`--port` below must be a USB-RS485 adapter connected to the analyser's RS-485
+bus. Use the USB console separately to inspect calibration completion logs.
+
+Inspect live measurements, heater setpoint, and status bits without writing:
+
+```bash
+python3 scripts/verify_modbus.py --port /dev/ttyUSB0
+```
+
+Run a reversible heater-setpoint test with a target within 2 C of the current
+setpoint. The script checks holding-register readback and Modbus responsiveness
+for at least 5.5 seconds, then restores the original value:
+
+```bash
+python3 scripts/verify_modbus.py --port /dev/ttyUSB0 \
+  --heater-setpoint-test 30.5 --confirm-heater-write
+```
+
+Add `--verify-persistence` to power-cycle the analyser and verify the test
+setpoint survived reboot before restoring the original setting.
+
+To trigger an ambient-air O2 span calibration, ensure ambient air is flowing
+and stable before running:
+
+```bash
+python3 scripts/verify_modbus.py --port /dev/ttyUSB0 \
+  --o2-span-air 20.95 --confirm-o2-span
+```
+
+Span calibration updates persistent O2 calibration values. The script polls
+O2 readback and status for up to 60 seconds; confirm completion from the USB
+console log.
+
+Run the host-side verifier tests without hardware or serial dependencies:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+The heater test also polls the restored setpoint through the firmware's
+five-second save window before returning. Readback is not proof of persistence;
+only the explicit power-cycle check verifies persistence of the test value.
 
 ### CO2 Sensor Calibration
 
@@ -331,17 +393,16 @@ write_float(client, 8, 20.9, SLAVE_ID)
 
 1. Flow nitrogen or zero-CO2 gas through the sensor
 2. Wait for readings to stabilise
-3. Write the expected zero reading (typically 0-400 ppm) to register 10
+3. Write the expected zero reading (typically 0-400 ppm) to register 9
 
 ```python
-# Set CO2 zero point (expects 0 ppm, sensor reads 50 ppm)
-# Write 50 to offset the reading
-client.write_register(10, 50, slave=SLAVE_ID)
+# Set a 400 ppm reference when the sensor reads 450 ppm
+client.write_register(9, 400, slave=SLAVE_ID)
 ```
 
 #### Span Calibration
 
-Span calibration for CO2 is reserved for future implementation (registers 11-12).
+Span calibration for CO2 is reserved for future implementation (registers 12-13).
 
 ---
 
@@ -361,15 +422,35 @@ The analyser has an RGB LED that indicates system state:
 
 ## Building and Flashing
 
-This project uses PlatformIO. To build and upload:
+This project uses PlatformIO. The NTC thermistor library is vendored in `lib/`;
+no submodule initialization or SAMD core patch is required.
 
 ```bash
 # Build
-pio run
+pio run -e gas_analyser_m0
 
-# Upload via Atmel-ICE
-pio run --target upload
+# Upload
+pio run -e gas_analyser_m0 --target upload
 ```
+
+Confirm the upload port belongs to the gas analyser, not an ORC MCU, before
+uploading. USB CDC is diagnostic output at 115200 baud; opening it at 1200 baud
+requests bootloader entry. The UF2 bootloader identifies as `GAS ANALYSER M0`,
+Board-ID `SAMD21E18A-GA-M0`, and mounts as `GA_BOOT`. Application firmware
+identifies as `BSI Gas Analyser M0`.
+
+USB enumeration alone does not prove sensor initialization or main-loop health.
+Capture the startup console to check initialization and configuration. The
+current full-image UF2 includes the flash-backed EEPROM area: a bench upload
+reported `Got EEPROM version: 0xFF, expected: 0xA0` and wrote default
+configuration/calibration. An unchanged `EEPROM_VERSION_BYTE` does not prevent
+this. Save calibration/configuration before uploading, and plan explicit
+restoration or recalibration before measurement use; do not assume an upload
+preserves calibration.
+
+A bootloader `CURRENT.UF2` readback can help recover stored configuration, but
+is not automatically a bootable rollback image. The bench readback had an erased
+application vector-table block; validate a recovery image before using it.
 
 ### Dependencies
 

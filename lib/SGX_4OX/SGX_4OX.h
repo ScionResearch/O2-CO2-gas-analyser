@@ -34,6 +34,7 @@ class SGX40X {
 public:
     SGX40X(int pin_sensor, int analog_read_resolution, float adc_ref_voltage, float ref_resistance, float voltage_gain);           // Constructor
     void begin();                                                               // Initialize sensor (for debug only)
+    bool sampleStep(uint8_t targetSamples = 10);                                // Non-blocking single ADC sample accumulation
     float getMicroAmps(int adc_raw);                                            // Read sensor current in microAmps
     float getTempCompensationFactor(float temperature_c);                       // Get temperature compensation factor
     float readO2();                                                             // Read O2 concentration at reference temperature (20°C)
@@ -67,4 +68,9 @@ private:
     float _calibration_temperature;
     uint8_t _calibration_error;
     uint8_t _calibration_stable_count;
+    // Non-blocking oversampling state
+    float _sample_sum_uA;
+    float _filtered_current_uA;
+    uint8_t _sample_count;
+    bool _has_filtered_current;
 };
