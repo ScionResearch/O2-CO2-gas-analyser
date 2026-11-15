@@ -32,10 +32,13 @@ A precision gas analysis system built on the SAMD21 microcontroller platform, fe
 | Parameter | Default Value |
 |-----------|---------------|
 | Slave ID | 100 |
-| Baud Rate | 9600 |
+| Baud Rate | 19200 |
 | Data Bits | 8 |
-| Parity | None |
-| Stop Bits | 1 |
+| Parity | Even |
+| Stop Bits | 2 |
+
+These defaults match the CM5 ORC RS-485 Port 2 bus (19200 8E2). Keep the ORC
+port settings unchanged when it is shared with other devices.
 
 ### Supported Function Codes
 
