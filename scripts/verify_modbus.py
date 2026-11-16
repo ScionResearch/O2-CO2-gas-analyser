@@ -13,6 +13,24 @@ INPUT_HEATER_TEMP_C = 16
 HOLDING_STATUS = 0
 HOLDING_O2_SPAN = 10
 HOLDING_HEATER_SETPOINT = 22
+INPUT_CALIBRATION_STATUS = 18
+INPUT_CALIBRATION_ELAPSED_MS = 24
+CALIBRATION_MAGIC = 0xCA01
+CALIBRATION_RUNNING = 1
+CALIBRATION_SUCCEEDED = 2
+CALIBRATION_FAILED = 3
+CALIBRATION_OP_O2_SPAN = 2
+CALIBRATION_FLAG_O2_COMMIT_COMPLETED = 1
+
+CALIBRATION_ERRORS = {
+    0: "none",
+    1: "did not stabilise",
+    2: "current below minimum",
+    3: "current above maximum",
+    4: "unknown error",
+    5: "storage failure",
+    6: "unsupported",
+}
 
 STATUS_NAMES = {
     "system": {0x01: "OK", 0x02: "watchdog reset", 0x03: "OK (watchdog history)"},
@@ -54,6 +72,21 @@ def status_fields(registers):
         "gas_temp_humidity": (raw >> 16) & 0x0F,
         "ambient_temp": (raw >> 20) & 0x0F,
         "watchdog_reset_count": (raw >> 24) & 0xFF,
+    }
+
+
+def calibration_status_fields(registers):
+    """Decode input registers 18-23 from the calibration-status contract."""
+    if len(registers) != 6:
+        raise ValueError("calibration status requires six Modbus registers")
+    if registers[0] != CALIBRATION_MAGIC:
+        raise ValueError("device does not expose the calibration-status protocol")
+    return {
+        "state": registers[1],
+        "error": registers[2],
+        "operation": registers[3],
+        "sequence": registers[4],
+        "flags": registers[5],
     }
 
 
@@ -164,11 +197,42 @@ def verify_heater_setpoint(instrument, target, wait_seconds, verify_persistence)
     print("PASS: heater setpoint write and post-write Modbus responsiveness")
 
 
-def poll_o2_span(instrument, span, phase):
+def poll_o2_span(instrument, span, phase, expected_sequence=None):
     deadline = time.monotonic() + 60.0
     stable_readings = 0
     while time.monotonic() < deadline:
         time.sleep(2.0)
+        calibration = calibration_status_fields(
+            instrument.read_registers(INPUT_CALIBRATION_STATUS, 6, functioncode=4)
+        )
+        if expected_sequence is not None:
+            if calibration["sequence"] != expected_sequence:
+                print("Waiting for analyser to accept O2 span command.")
+                continue
+            if calibration["operation"] != CALIBRATION_OP_O2_SPAN:
+                raise RuntimeError(
+                    "analyser accepted a different calibration operation "
+                    f"(operation {calibration['operation']})"
+                )
+            if calibration["state"] == CALIBRATION_FAILED:
+                error = CALIBRATION_ERRORS.get(calibration["error"], "unknown error")
+                raise RuntimeError(f"O2 span calibration failed: {error}")
+            if calibration["state"] != CALIBRATION_SUCCEEDED:
+                elapsed = instrument.read_registers(
+                    INPUT_CALIBRATION_ELAPSED_MS, 2, functioncode=4
+                )
+                elapsed_ms = elapsed[0] | (elapsed[1] << 16)
+                print(
+                    f"O2 calibration state={calibration['state']} "
+                    f"elapsed={elapsed_ms} ms"
+                )
+                continue
+            if not calibration["flags"] & CALIBRATION_FLAG_O2_COMMIT_COMPLETED:
+                raise RuntimeError(
+                    "O2 calibration succeeded but firmware did not report "
+                    "completed EEPROM save/commit calls"
+                )
+
         o2 = read_float(instrument, INPUT_O2_PERCENT, 4)
         status = status_fields(
             instrument.read_registers(HOLDING_STATUS, 2, functioncode=3)
@@ -202,17 +266,23 @@ def run_o2_span(instrument, span, verify_persistence):
     if not math.isfinite(gas_temp):
         raise RuntimeError("gas temperature is invalid; refusing O2 span calibration")
 
+    before = calibration_status_fields(
+        instrument.read_registers(INPUT_CALIBRATION_STATUS, 6, functioncode=4)
+    )
+    if before["state"] == CALIBRATION_RUNNING:
+        raise RuntimeError("an O2 calibration is already running")
+    expected_sequence = (before["sequence"] + 1) & 0xFFFF
+
     print(
         f"Sending O2 span point {span:.2f}% to holding registers "
         f"{HOLDING_O2_SPAN}-{HOLDING_O2_SPAN + 1}."
     )
     instrument.write_registers(HOLDING_O2_SPAN, float_to_registers(span))
     print(
-        "Calibration may take up to 60 seconds. Modbus does not expose a "
-        "calibration-complete bit; verify the USB console reports "
-        "'O2 calibration complete' and that the new values were saved."
+        "Calibration may take up to 60 seconds. Polling input registers "
+        "18-23 for the actual calibration result and save status."
     )
-    poll_o2_span(instrument, span, "after calibration")
+    poll_o2_span(instrument, span, "after calibration", expected_sequence)
 
     if verify_persistence:
         completion_confirmed = input(

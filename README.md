@@ -59,7 +59,8 @@ within each 16-bit Modbus register remain in standard Modbus order.
 
 ### Input Registers (Function Code 04) - Read Only
 
-Input registers contain sensor measurements. Floating-point values are
+Input registers 0-17 contain sensor measurements; 18-37 append calibration
+status and active calibration/configuration values. Floating-point values are
 IEEE-754 single-precision (32-bit) values spanning two consecutive registers.
 
 | Address | Name | Type | Unit | Description |
@@ -73,6 +74,41 @@ IEEE-754 single-precision (32-bit) values spanning two consecutive registers.
 | 12-13 | gasVP | float | Pa | Vapour pressure |
 | 14-15 | ambTempC | float | C | Ambient temperature (NTC) |
 | 16-17 | heatTempC | float | C | Heater block temperature (NTC) |
+| 18 | calibrationMagic | uint16 | - | Protocol marker `0xCA01` |
+| 19 | calibrationState | uint16 | - | 0=idle, 1=running, 2=succeeded, 3=failed |
+| 20 | calibrationError | uint16 | - | 0=none, 1=did not stabilise, 2=current below min, 3=current above max, 4=unknown, 5=storage failure, 6=unsupported |
+| 21 | calibrationOperation | uint16 | - | 0=none, 1=O2 zero, 2=O2 span, 3=CO2 zero, 4=CO2 span, 5=heater setpoint |
+| 22 | calibrationSequence | uint16 | - | Increments for each accepted operation; wraps at 16 bits |
+| 23 | calibrationFlags | uint16 | - | Bit 0=latest O2 save/commit calls completed; bit 1=config save pending |
+| 24-25 | calibrationElapsedMs | uint32 | ms | Elapsed time for the current/last operation; wraps at 32 bits |
+| 26-27 | o2CalibrationOffset | float | uA | Active O2 zero-current coefficient |
+| 28-29 | o2CalibrationScale | float | - | Active O2 span coefficient |
+| 30-31 | co2CalibrationOffset | float | ppm | Active CO2 software offset |
+| 32-33 | co2CalibrationScale | float | - | Active CO2 scale |
+| 34-35 | activeHeaterSetpointC | float | C | Current heater setpoint |
+| 36-37 | committedHeaterSetpointC | float | C | Heater setpoint last recorded after an EEPROM commit call |
+
+The calibration status is volatile: after boot it starts idle with sequence 0
+and does not invent a previous calibration date/result. Coefficients and heater
+values report the values loaded/active in this boot. The sequence, operation,
+state, error, and elapsed time remain available until another accepted
+operation or reboot.
+
+The O2 result is based on the sensor library's completed stability algorithm,
+not on a register write or a changed reading. Library error 1 means the reading
+did not stabilise, 2 means current below the minimum, and 3 means current above
+the maximum; other nonzero library results map to error 4. Flag bit 0 clears
+when a new O2 operation is accepted and sets only after that operation succeeds
+and its `EEPROM.put()` and `EEPROM.commit()` calls return. The EEPROM
+API does not report a flash-write result, so this flag is not an independent
+power-cycle persistence check. Error 5 is reserved because the current EEPROM
+API has no returned failure status. Flag bit 1 marks a config save waiting for
+the firmware's five-second save window; it clears when the commit call completes.
+Heater configuration writes are ignored while an O2 zero/span operation is
+running (and in the same holding-register request that starts one); the last
+accepted heater settings remain active.
+The unchanged EEPROM `Config` structure and holding-register layout are
+preserved.
 
 ### Holding Registers (Function Code 03/06/16) - Read/Write
 
@@ -312,8 +348,8 @@ The O2 sensor supports two-point calibration: zero (0% O2) and span (typically 2
 ```python
 # Start O2 zero calibration
 client.write_register(8, 1, slave=SLAVE_ID)
-# Calibration takes up to 60 seconds
-# Monitor the blue LED and USB console for calibration progress and result.
+# Read input registers 18-23 for live state, error, operation, sequence, and flags.
+# Calibration takes up to 60 seconds; poll state until it is 2 (success) or 3 (failure).
 ```
 
 #### Span Calibration (e.g., 20.9% O2)
@@ -325,15 +361,16 @@ client.write_register(8, 1, slave=SLAVE_ID)
 ```python
 # Calibrate with 20.9% O2 (ambient air)
 write_float(client, 10, 20.95, SLAVE_ID)
-# Calibration takes up to 60 seconds
+# Poll input registers 18-23 for completion and input registers 26-29 for the
+# active coefficients. A successful save sets calibrationFlags bit 0.
 ```
 
 **Calibration Requirements:**
 - Sensor current must be within 70-130 uA for air
 - Reading must stabilise (+/-0.1 uA for 5 consecutive readings)
 - Maximum calibration time: 60 seconds
-- The Modbus status register has no calibration-complete bit. Check the USB
-  console for `O2 calibration complete` or the reported calibration error.
+- Read the appended input-register status (18-23) for progress and the actual
+  algorithm result. The USB console remains available for diagnostics.
 
 ### Engineer Verification Script
 
@@ -377,9 +414,9 @@ python3 scripts/verify_modbus.py --port /dev/ttyUSB0 \
   --o2-span-air 20.95 --confirm-o2-span
 ```
 
-Span calibration updates persistent O2 calibration values. The script polls
-O2 readback and status for up to 60 seconds; confirm completion from the USB
-console log. Add `--verify-persistence` to confirm the successful-save message,
+Span calibration updates O2 calibration values. The script polls the firmware
+operation/result registers and O2 readback for up to 60 seconds. Add
+`--verify-persistence` to confirm the successful-save message,
 power-cycle while ambient air remains stable, confirm the startup console shows
 the saved span coefficient, and verify that Modbus O2 readback remains stable
 near the span point after reboot.
@@ -409,7 +446,13 @@ client.write_register(9, 400, slave=SLAVE_ID)
 
 #### Span Calibration
 
-Span calibration for CO2 is reserved for future implementation (registers 12-13).
+Span calibration for CO2 is not implemented. A valid request in registers
+12-13 is reported as operation 4, failed with error 6 (unsupported).
+
+Writing zero to CO2 zero-reference register 9 is a no-op; it does not start a
+calibration or change the status sequence. A nonzero reference currently
+applies the software offset to the live CO2 reading and reports operation 3,
+but that offset is volatile and is not written to the EEPROM `Config`.
 
 ---
 
