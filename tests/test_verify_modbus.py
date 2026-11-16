@@ -10,6 +10,7 @@ from scripts.verify_modbus import (
     open_instrument,
     registers_to_float,
     run_o2_span,
+    calibration_status_fields,
     status_fields,
     verify_heater_setpoint,
 )
@@ -39,6 +40,12 @@ class RegisterEncodingTests(unittest.TestCase):
                 "ambient_temp": 1,
                 "watchdog_reset_count": 7,
             },
+        )
+
+    def test_calibration_status_decodes_appended_contract(self):
+        self.assertEqual(
+            calibration_status_fields([0xCA01, 2, 0, 2, 7, 1]),
+            {"state": 2, "error": 0, "operation": 2, "sequence": 7, "flags": 1},
         )
 
     def test_o2_span_defaults_to_ambient_air(self):
@@ -161,7 +168,13 @@ class O2CalibrationTests(unittest.TestCase):
         self.instrument = Mock()
         self.now = 0.0
         self.o2 = 20.95
+        self.calibration_state = 0
+        self.calibration_error = 0
+        self.calibration_operation = 0
+        self.calibration_sequence = 0
+        self.calibration_flags = 0
         self.instrument.read_registers.side_effect = self.read_registers
+        self.instrument.write_registers.side_effect = self.write_registers
         self.clock = patch(
             "scripts.verify_modbus.time.monotonic", side_effect=lambda: self.now
         )
@@ -181,15 +194,47 @@ class O2CalibrationTests(unittest.TestCase):
             return float_to_registers(25.0)
         if functioncode == 4 and address == 0:
             return float_to_registers(self.o2)
+        if functioncode == 4 and address == 18:
+            return [
+                0xCA01,
+                self.calibration_state,
+                self.calibration_error,
+                self.calibration_operation,
+                self.calibration_sequence,
+                self.calibration_flags,
+            ]
+        if functioncode == 4 and address == 24:
+            elapsed = int(self.now * 1000)
+            return [elapsed & 0xFFFF, (elapsed >> 16) & 0xFFFF]
         if functioncode == 3 and address == 0:
             return [0x0011, 0]
         self.fail(f"unexpected read: {address}, {count}, {functioncode}")
+
+    def write_registers(self, address, registers):
+        self.assertEqual(address, 10)
+        self.assertEqual(len(registers), 2)
+        self.calibration_sequence = (self.calibration_sequence + 1) & 0xFFFF
+        self.calibration_operation = 2
+        self.calibration_state = 2
+        self.calibration_error = 0
+        self.calibration_flags = 1
 
     def test_o2_span_write_requires_stable_readback(self):
         run_o2_span(self.instrument, 20.95, False)
         self.instrument.write_registers.assert_called_once_with(
             10, float_to_registers(20.95)
         )
+
+    def test_o2_span_fails_from_firmware_result_even_with_stable_readback(self):
+        def fail_calibration(address, registers):
+            self.write_registers(address, registers)
+            self.calibration_state = 3
+            self.calibration_error = 3
+            self.calibration_flags = 0
+
+        self.instrument.write_registers.side_effect = fail_calibration
+        with self.assertRaisesRegex(RuntimeError, "current above maximum"):
+            run_o2_span(self.instrument, 20.95, False)
 
     def test_o2_span_persistence_checks_after_power_cycle(self):
         with patch("builtins.input", side_effect=("yes", "yes")) as confirm_power_cycle:

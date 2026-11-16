@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <stddef.h>
 #include "debug/debug.h"
 // Lib includes
 #include <wdt_samd21.h>
@@ -12,6 +13,7 @@
 #include "NTC_Therm.h"
 #include "PID_Control.h"
 #include "modbus-rtu-slave.h"
+#include "calibration_status.h"
 
 // Pins
 #define PIN_VPSU_FB 2
@@ -201,10 +203,32 @@ struct ModbusInputRegisters {
     float gasVP = 0.0;
     float ambTempC = 0.0;
     float heatTempC = 0.0;
+    uint16_t calibrationMagic = 0;
+    uint16_t calibrationState = calibration_status::IDLE;
+    uint16_t calibrationError = calibration_status::ERROR_NONE;
+    uint16_t calibrationOperation = calibration_status::OP_NONE;
+    uint16_t calibrationSequence = 0;
+    uint16_t calibrationFlags = 0;
+    uint32_t calibrationElapsedMs = 0;
+    float o2CalibrationOffset = 0.0;
+    float o2CalibrationScale = 0.0;
+    float co2CalibrationOffset = 0.0;
+    float co2CalibrationScale = 0.0;
+    float activeHeaterSetpointC = 0.0;
+    float committedHeaterSetpointC = 0.0;
 };
 
 #define NUM_HOLDING_REGISTERS 50
-#define NUM_INPUT_REGISTERS 50
+#define NUM_INPUT_REGISTERS 38
+
+static_assert(sizeof(ModbusInputRegisters) == NUM_INPUT_REGISTERS * sizeof(uint16_t),
+              "Modbus input structure must match its register count");
+static_assert(offsetof(ModbusInputRegisters, calibrationMagic) == 18 * sizeof(uint16_t),
+              "Calibration status must append after the legacy input registers");
+static_assert(offsetof(ModbusInputRegisters, calibrationElapsedMs) == 24 * sizeof(uint16_t),
+              "Calibration elapsed time register offset changed");
+static_assert(offsetof(ModbusInputRegisters, o2CalibrationOffset) == 26 * sizeof(uint16_t),
+              "Calibration coefficient register offset changed");
 
 ModbusHoldingRegisters modbusHoldingRegisters;
 ModbusInputRegisters modbusInputRegisters;

@@ -24,6 +24,10 @@ bool updateAmbientTemp();
 bool updateHeaterTemp();
 bool updateO2();
 bool updateCO2(uint32_t lastReading_ts);
+void updateCalibrationTelemetry(bool configSavePending);
+
+calibration_status::Status calibrationStatus;
+float lastCommittedHeaterSetpointC = 0.0f;
 
 
 void setup() {
@@ -91,6 +95,9 @@ void setup() {
   setErrorState(STATUS_WDT_RESETS_bp, wdtCount);
   Serial.printf("Reset reason: %s\n\r", resetReason());
 
+  lastCommittedHeaterSetpointC = config.heaterSetpointC;
+  EEPROM.setCommitASAP(false);
+
   // Initialize RS-485 bus termination from EEPROM config (off by default)
   config.modbus120Rterm = config.modbus120Rterm ? 1 : 0;
   pinMode(PIN_RS485_TERM, OUTPUT);
@@ -148,6 +155,7 @@ void setup() {
   // Modbus init
   Serial.println("Initialising Modbus...");
   configToHolding();
+  updateCalibrationTelemetry(false);
   modbus.configureHoldingRegisters(holding, NUM_HOLDING_REGISTERS);
   modbus.configureInputRegisters(input, NUM_INPUT_REGISTERS);
 
@@ -183,13 +191,15 @@ void setup() {
 
 void loop() {
   // Fast loop - every cycle (no artificial gate; keeps Serial1 drained before t3.5 gaps)
-  int FC = modbus.poll();
   static bool eepromDirty = false;
   static uint32_t lastConfigSave_ts = 0;
+  updateCalibrationTelemetry(eepromDirty);
+  int FC = modbus.poll();
   if (FC > 0) {
     if (FC == 6 || FC == 16) {
       if (holdingToConfig()) {
         eepromDirty = true;
+        calibrationStatus.setConfigSavePending(true);
       }
     }
   }
@@ -198,7 +208,10 @@ void loop() {
     eepromDirty = false;
     Serial.println("Saving config to EEPROM...");
     EEPROM.commit();
+    lastCommittedHeaterSetpointC = config.heaterSetpointC;
+    calibrationStatus.setConfigSavePending(false);
   }
+  updateCalibrationTelemetry(eepromDirty);
   wdt_reset();
   updateLED();
 
@@ -233,31 +246,40 @@ void loop() {
     }
 
     // O2 sensor calibration management
-    static bool O2calibrating = false;
-    if (O2.isCalibrating()) {
-      if (!O2calibrating) {
-        O2calibrating = true;
+    if (calibrationStatus.isRunning()
+        && (calibrationStatus.operation == calibration_status::OP_O2_ZERO
+            || calibrationStatus.operation == calibration_status::OP_O2_SPAN)) {
+      if (O2.isCalibrating()) {
         systemState.state = STATE_CALIBRATING_O2;
-      }    
-      O2.manageCalibration();
-    } else if (O2calibrating) {
-      uint8_t error = O2.calibrationError();
-      if (error == 0) {
-        Serial.printf("O2 calibration complete, span coefficient: %.2f offset: %.2f\n\r", O2.getSpanCalibration(), O2.getZeroCalibration());
-        config.o2CalibrationOffset = O2.getZeroCalibration();
-        config.o2CalibrationScale = O2.getSpanCalibration();
-        EEPROM.put(1, config);
-        EEPROM.commit();
-        Serial.println("Saved new values to non-volatile memory");
-        systemState.state = STATE_NORMAL;
-      } else {
-        const char *errorMessage[4] = {"did not stabilise", "current below min", "current above max", "unknown error"};
-        if (error > 3) error = 3;
-        Serial.printf("O2 calibration error: %s\n\r", errorMessage[error]);
-        systemState.state = STATE_ERROR;
+        O2.manageCalibration();
       }
-      O2calibrating = false;
+      if (!O2.isCalibrating()) {
+        uint8_t error = O2.calibrationError();
+        if (error == 0) {
+          config.o2CalibrationOffset = O2.getZeroCalibration();
+          config.o2CalibrationScale = O2.getSpanCalibration();
+          EEPROM.put(1, config);
+          EEPROM.commit();
+          eepromDirty = false;
+          lastCommittedHeaterSetpointC = config.heaterSetpointC;
+          calibrationStatus.setConfigSavePending(false);
+          calibrationStatus.finishO2(error, millis(), true);
+          Serial.printf("O2 calibration complete, span coefficient: %.2f offset: %.2f\n\r", O2.getSpanCalibration(), O2.getZeroCalibration());
+          Serial.println("Saved new values to non-volatile memory");
+          systemState.state = STATE_NORMAL;
+        } else {
+          calibrationStatus.finishO2(error, millis(), false);
+          const char *errorMessage[5] = {
+            "success", "did not stabilise", "current below min",
+            "current above max", "unknown error"
+          };
+          uint8_t messageError = error <= 4 ? error : 4;
+          Serial.printf("O2 calibration error: %s\n\r", errorMessage[messageError]);
+          systemState.state = STATE_ERROR;
+        }
+      }
     }
+    updateCalibrationTelemetry(eepromDirty);
   }
   // ------------------------------------------------|
 
@@ -338,6 +360,7 @@ void loop() {
       case SLOW_PUBLISH:
         if (nowMs - slowStepTimeStamp >= 5) {
           sensorsToInputs();
+          updateCalibrationTelemetry(eepromDirty);
           slowStepTimeStamp = nowMs;
           slowPhase = SLOW_WAIT_CYCLE;
         }
@@ -427,8 +450,17 @@ bool holdingToConfig() {
   bool configToSave = false;
   bool reinitModbus = false;
   bool serialConfigChanged = false;
+  bool heaterSetpointChanged = false;
   ModbusHoldingRegisters temp;
   memcpy(&temp, holding, sizeof(temp));
+  bool o2CalibrationBusy =
+      calibrationStatus.isRunning()
+      && (calibrationStatus.operation == calibration_status::OP_O2_ZERO
+          || calibrationStatus.operation == calibration_status::OP_O2_SPAN);
+  bool o2CalibrationRequested =
+      temp.O2SetZeroPoint == 1
+      || (temp.O2SetXPoint >= 10.0 && temp.O2SetXPoint <= 25.0);
+  bool rejectHeaterMutations = o2CalibrationBusy || o2CalibrationRequested;
 
   // Modbus settings
   if (temp.modbusSlaveID != modbusHoldingRegisters.modbusSlaveID) {
@@ -485,7 +517,7 @@ bool holdingToConfig() {
   }
 
   // Heater settings
-  if (temp.heaterKp != modbusHoldingRegisters.heaterKp) {
+  if (!rejectHeaterMutations && temp.heaterKp != modbusHoldingRegisters.heaterKp) {
     if (temp.heaterKp > 0.0 && temp.heaterKp < 1000.0) {
       modbusHoldingRegisters.heaterKp = temp.heaterKp;
       config.heaterKp = temp.heaterKp;
@@ -493,7 +525,7 @@ bool holdingToConfig() {
       Serial.printf("Heater Kp changed to %f\n\r", temp.heaterKp);
     }
   }
-  if (temp.heaterKi != modbusHoldingRegisters.heaterKi) {
+  if (!rejectHeaterMutations && temp.heaterKi != modbusHoldingRegisters.heaterKi) {
     if (temp.heaterKi > 0.0 && temp.heaterKi < 1000.0) {
       modbusHoldingRegisters.heaterKi = temp.heaterKi;
       config.heaterKi = temp.heaterKi;
@@ -501,7 +533,7 @@ bool holdingToConfig() {
       Serial.printf("Heater Ki changed to %f\n\r", temp.heaterKi);
     }
   }
-  if (temp.heaterKd != modbusHoldingRegisters.heaterKd) {
+  if (!rejectHeaterMutations && temp.heaterKd != modbusHoldingRegisters.heaterKd) {
     if (temp.heaterKd > 0.0 && temp.heaterKd < 1000.0) {
       modbusHoldingRegisters.heaterKd = temp.heaterKd;
       config.heaterKd = temp.heaterKd;
@@ -509,7 +541,7 @@ bool holdingToConfig() {
       Serial.printf("Heater Kd changed to %f\n\r", temp.heaterKd);
     }
   }
-  if (temp.heaterMaxI != modbusHoldingRegisters.heaterMaxI) {
+  if (!rejectHeaterMutations && temp.heaterMaxI != modbusHoldingRegisters.heaterMaxI) {
     if (temp.heaterMaxI > 0.0 && temp.heaterMaxI < 255.0) {
       modbusHoldingRegisters.heaterMaxI = temp.heaterMaxI;
       config.heaterMaxI = temp.heaterMaxI;
@@ -517,16 +549,18 @@ bool holdingToConfig() {
       Serial.printf("Heater max I changed to %f\n\r", temp.heaterMaxI);
     }
   }
-  if (temp.heaterSetpointC != modbusHoldingRegisters.heaterSetpointC) {
+  if (!rejectHeaterMutations && temp.heaterSetpointC != modbusHoldingRegisters.heaterSetpointC) {
     if (temp.heaterSetpointC >= 20.0 && temp.heaterSetpointC <= 50.0) {
       modbusHoldingRegisters.heaterSetpointC = temp.heaterSetpointC;
       config.heaterSetpointC = temp.heaterSetpointC;
       configToSave = true;
+      heaterSetpointChanged = true;
       heaterCtrl.setpoint(config.heaterSetpointC);
       Serial.printf("Heater setpoint changed to %f\n\r", temp.heaterSetpointC);  
     }
   }
-  if (temp.heaterMinAmbientDeltaC != modbusHoldingRegisters.heaterMinAmbientDeltaC) {
+  if (!rejectHeaterMutations
+      && temp.heaterMinAmbientDeltaC != modbusHoldingRegisters.heaterMinAmbientDeltaC) {
     if (temp.heaterMinAmbientDeltaC >= 0.0 && temp.heaterMinAmbientDeltaC <= 20.0) {
       modbusHoldingRegisters.heaterMinAmbientDeltaC = temp.heaterMinAmbientDeltaC;
       config.heaterMinAmbientDeltaC = temp.heaterMinAmbientDeltaC;
@@ -535,26 +569,40 @@ bool holdingToConfig() {
     }
   }
 
-  // Sensor calibration
-  if (temp.O2SetZeroPoint == 1) {
-    // Start zero point calibration
-    O2.startZeroCalibration(modbusInputRegisters.gasTempC);
-    Serial.println("Start O2 zero point calibration");
-  }
-  if (temp.O2SetXPoint >= 10.0 && temp.O2SetXPoint <= 25.0) {
-    // Start high point calibration
-    O2.startSpanCalibration(temp.O2SetXPoint, modbusInputRegisters.gasTempC);
-    Serial.println("Start O2 high point calibration");
-  }
-  if (temp.CO2SetZeroPoint > 0 && temp.CO2SetZeroPoint < 5000) {
-    // Start zero point calibration
-    CO2.setCalibrationOffset(temp.CO2SetZeroPoint - CO2.CO2());
-    Serial.println("Start CO2 zero point calibration");
-  }
-  if (temp.CO2SetXPoint >= 300.0 && temp.CO2SetXPoint <= 50000.0) {
-    // Start high point calibration
-    // TODO
-    Serial.println("Start CO2 high point calibration");
+  // Calibration commands are one-shot. While a command is active, ignore new
+  // calibration requests so they cannot replace its observable result.
+  if (!calibrationStatus.isRunning()) {
+    if (temp.O2SetZeroPoint == 1) {
+      if (O2.startZeroCalibration(modbusInputRegisters.gasTempC)
+          && calibrationStatus.begin(calibration_status::OP_O2_ZERO, millis())) {
+        Serial.println("Start O2 zero point calibration");
+      }
+    } else if (temp.O2SetXPoint >= 10.0 && temp.O2SetXPoint <= 25.0) {
+      if (O2.startSpanCalibration(temp.O2SetXPoint, modbusInputRegisters.gasTempC)
+          && calibrationStatus.begin(calibration_status::OP_O2_SPAN, millis())) {
+        Serial.println("Start O2 high point calibration");
+      }
+    } else if (temp.CO2SetZeroPoint > 0 && temp.CO2SetZeroPoint < 5000) {
+      if (calibrationStatus.begin(calibration_status::OP_CO2_ZERO, millis())) {
+        int32_t requestedOffset = static_cast<int32_t>(temp.CO2SetZeroPoint)
+                                  - static_cast<int32_t>(CO2.CO2());
+        bool applied = CO2.setCalibrationOffset(requestedOffset);
+        calibrationStatus.finish(
+            applied,
+            applied ? calibration_status::ERROR_NONE : calibration_status::ERROR_UNKNOWN,
+            millis());
+        Serial.println(applied ? "Start CO2 zero point calibration"
+                               : "CO2 zero point calibration failed");
+      }
+    } else if (temp.CO2SetXPoint >= 300.0 && temp.CO2SetXPoint <= 50000.0) {
+      if (calibrationStatus.begin(calibration_status::OP_CO2_SPAN, millis())) {
+        calibrationStatus.finish(false, calibration_status::ERROR_UNSUPPORTED, millis());
+        Serial.println("CO2 span calibration is unsupported");
+      }
+    } else if (heaterSetpointChanged
+               && calibrationStatus.begin(calibration_status::OP_HEATER, millis())) {
+      calibrationStatus.finish(true, calibration_status::ERROR_NONE, millis());
+    }
   }
 
   // Rewrite holding registers array with new (sanitised values)
@@ -574,6 +622,27 @@ bool holdingToConfig() {
 
 void sensorsToInputs() {
   memcpy(input, &modbusInputRegisters, sizeof(modbusInputRegisters));
+}
+
+void updateCalibrationTelemetry(bool configSavePending) {
+  calibrationStatus.updateElapsed(millis());
+  calibrationStatus.setConfigSavePending(configSavePending);
+  modbusInputRegisters.calibrationMagic = 0xCA01;
+  modbusInputRegisters.calibrationState = calibrationStatus.state;
+  modbusInputRegisters.calibrationError = calibrationStatus.error;
+  modbusInputRegisters.calibrationOperation = calibrationStatus.operation;
+  modbusInputRegisters.calibrationSequence = calibrationStatus.sequence;
+  modbusInputRegisters.calibrationFlags = calibrationStatus.flags;
+  modbusInputRegisters.calibrationElapsedMs = calibrationStatus.elapsedMs;
+  modbusInputRegisters.o2CalibrationOffset = O2.getZeroCalibration();
+  modbusInputRegisters.o2CalibrationScale = O2.getSpanCalibration();
+  modbusInputRegisters.co2CalibrationOffset = static_cast<float>(CO2.getCalibrationOffset());
+  modbusInputRegisters.co2CalibrationScale = CO2.getCalibrationScale();
+  modbusInputRegisters.activeHeaterSetpointC = config.heaterSetpointC;
+  modbusInputRegisters.committedHeaterSetpointC = lastCommittedHeaterSetpointC;
+
+  const uint16_t *registers = reinterpret_cast<const uint16_t *>(&modbusInputRegisters);
+  memcpy(input + 18, registers + 18, (NUM_INPUT_REGISTERS - 18) * sizeof(uint16_t));
 }
 
 float vapourPressure(float temperatureC, float relativeHumidity) {
